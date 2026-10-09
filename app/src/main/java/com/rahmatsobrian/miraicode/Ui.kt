@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.core.content.ContextCompat
+import androidx.compose.material3.ToggleFloatingActionButtonDefaults.animateIcon
 import androidx.graphics.shapes.Morph
 import androidx.graphics.shapes.toPath
 import rikka.shizuku.Shizuku
@@ -185,10 +186,12 @@ fun WorkspaceScreen(vm: MainVM) {
 // ───────────── Setelan ─────────────
 @Composable
 fun Choice(options: List<String>, sel: Int, onSel: (Int) -> Unit) =
-    ButtonGroup(Modifier.fillMaxWidth()) {
+    ButtonGroup(overflowIndicator = { }, modifier = Modifier.fillMaxWidth()) {
         options.forEachIndexed { i, o ->
-            val src = remember { MutableInteractionSource() }
-            ToggleButton(sel == i, { onSel(i) }, Modifier.weight(1f).animateWidth(src), interactionSource = src) { Text(o, maxLines = 1) }
+            customItem(buttonGroupContent = {
+                val src = remember { MutableInteractionSource() }
+                ToggleButton(sel == i, { onSel(i) }, Modifier.animateWidth(src), interactionSource = src) { Text(o, maxLines = 1) }
+            }, menuContent = { DropdownMenuItem(text = { Text(o) }, onClick = { onSel(i) }) })
         }
     }
 
@@ -297,10 +300,12 @@ fun ShowcaseScreen() {
                     }
                 }
                 Section("Button") {
-                    ButtonGroup(Modifier.fillMaxWidth()) {
+                    ButtonGroup(overflowIndicator = { }, modifier = Modifier.fillMaxWidth()) {
                         listOf("Satu", "Dua", "Tiga").forEach { l ->
-                            val src = remember { MutableInteractionSource() }
-                            Button({}, Modifier.weight(1f).animateWidth(src), interactionSource = src) { Text(l) }
+                            customItem(buttonGroupContent = {
+                                val src = remember { MutableInteractionSource() }
+                                Button({}, Modifier.animateWidth(src), interactionSource = src) { Text(l) }
+                            }, menuContent = { DropdownMenuItem(text = { Text(l) }, onClick = {}) })
                         }
                     }
                     SplitButtonLayout(leadingButton = {
