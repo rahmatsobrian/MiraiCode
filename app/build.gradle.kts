@@ -1,11 +1,10 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 android {
     namespace = "com.rahmatsobrian.miraicode"
-    compileSdk = 36
+    compileSdk = 37
     defaultConfig {
         applicationId = "com.rahmatsobrian.miraicode"
         minSdk = 28          // Android 9
@@ -32,7 +31,6 @@ android {
         debug { signingConfig = signingConfigs.getByName("release") }
     }
 }
-kotlin { jvmToolchain(17) }
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2026.08.00"))
     implementation("androidx.compose.ui:ui")

@@ -24,7 +24,7 @@ jobs:
       # Tidak butuh gradle wrapper di repo; Gradle dipasang langsung.
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 8.14.3
+          gradle-version: 9.3.1
 
       - name: Build debug + release APK (signed dengan app/release-key.jks)
         run: gradle :app:assembleDebug :app:assembleRelease --stacktrace
