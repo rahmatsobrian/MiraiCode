@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">MiraiCode</string>
+    <style name="Theme.MiraiCode" parent="android:Theme.Material.NoActionBar" />
+</resources>
