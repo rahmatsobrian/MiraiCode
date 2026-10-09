@@ -19,7 +19,7 @@ android {
         create("release") {
             storeFile = file("release-key.jks")
             // Isi password di bawah (atau set env KEYSTORE_PASSWORD / KEY_PASSWORD / KEY_ALIAS)
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "GANTI_PASSWORD_KEYSTORE"
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "rahmatsobrian"
             keyAlias = System.getenv("KEY_ALIAS") ?: "rahmatsobrian"
             keyPassword = System.getenv("KEY_PASSWORD") ?: "rahmatsobrian"
         }
@@ -34,10 +34,10 @@ android {
 }
 kotlin { jvmToolchain(17) }
 dependencies {
-    implementation(platform("androidx.compose:compose-bom:2025.09.00"))
+    implementation(platform("androidx.compose:compose-bom:2026.08.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
-    implementation("androidx.compose.material3:material3:1.4.0")
+    implementation("androidx.compose.material3:material3:1.5.0-alpha26")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.graphics:graphics-shapes:1.1.0")
     implementation("androidx.activity:activity-compose:1.11.0")
