@@ -14,7 +14,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -32,8 +31,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.asComposePath
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -42,12 +39,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.core.content.ContextCompat
 import androidx.compose.material3.ToggleFloatingActionButtonDefaults.animateIcon
-import androidx.graphics.shapes.Morph
-import kotlinx.coroutines.delay
-import androidx.graphics.shapes.toPath
 import rikka.shizuku.Shizuku
 
 // ───────────── App shell + navigasi ─────────────
@@ -118,7 +111,6 @@ fun ChatScreen(vm: MainVM) {
         AnimatedVisibility(vm.busy) { LinearWavyProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) }
         Box(Modifier.weight(1f)) {
             if (vm.msgs.isEmpty()) Column(Modifier.align(Alignment.Center).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                MorphHero()
                 Text("Workspace: ${vm.workspaces[vm.active].path}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                 Text("Minta AI membaca/menulis file atau menjalankan shell.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -224,13 +216,14 @@ fun WorkspaceScreen(vm: MainVM) {
 // ───────────── Setelan ─────────────
 @Composable
 fun Choice(options: List<String>, sel: Int, onSel: (Int) -> Unit) =
-    ButtonGroup(overflowIndicator = { }, modifier = Modifier.fillMaxWidth()) {
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
         options.forEachIndexed { i, o ->
-            customItem(buttonGroupContent = {
-                val src = remember { MutableInteractionSource() }
-                if (sel == i) Button({ onSel(i) }, Modifier.animateWidth(src), interactionSource = src) { Text(o, maxLines = 1) }
-                else OutlinedButton({ onSel(i) }, Modifier.animateWidth(src), interactionSource = src) { Text(o, maxLines = 1) }
-            }, menuContent = { DropdownMenuItem(text = { Text(o) }, onClick = { onSel(i) }) })
+            SegmentedButton(
+                selected = sel == i, onClick = { onSel(i) },
+                shape = SegmentedButtonDefaults.itemShape(i, options.size),
+                icon = {}, // tanpa ikon centang: hemat lebar, cegah teks terpotong
+                label = { Text(o, maxLines = 1, softWrap = false, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
+            )
         }
     }
 
@@ -302,25 +295,5 @@ fun SettingsScreen(vm: MainVM) {
                 SwitchRow("Dynamic color", if (Build.VERSION.SDK_INT >= 31) "Ikuti wallpaper (Android 12+)" else "Perlu Android 12+", vm.dynamic) { vm.dynamic = it; vm.save() }
             }
         }
-    }
-}
-
-// ───────────── Hero morph (empty state chat) ─────────────
-@Composable
-fun MorphHero() {
-    val shapes = listOf(MaterialShapes.Cookie9Sided, MaterialShapes.SoftBurst, MaterialShapes.Pill,
-        MaterialShapes.Clover4Leaf, MaterialShapes.Sunny, MaterialShapes.Flower)
-    var from by remember { mutableIntStateOf(0) }; var to by remember { mutableIntStateOf(0) }
-    val prog = remember { Animatable(0f) }
-    val spec = MaterialTheme.motionScheme.slowSpatialSpec<Float>()
-    val morph = remember(from, to) { Morph(shapes[from], shapes[to]) }
-    LaunchedEffect(Unit) { while (true) { delay(2600); from = to; to = (to + 1) % shapes.size } }
-    LaunchedEffect(to) { prog.snapTo(0f); prog.animateTo(1f, spec) }
-    val color = MaterialTheme.colorScheme.primaryContainer
-    Canvas(Modifier.size(120.dp)) {
-        val b = morph.calculateBounds()
-        val sc = size.minDimension / maxOf(b[2] - b[0], b[3] - b[1])
-        val path = morph.toPath(prog.value).asComposePath()
-        withTransform({ scale(sc, sc, Offset.Zero); translate(-b[0], -b[1]) }) { drawPath(path, color) }
     }
 }
