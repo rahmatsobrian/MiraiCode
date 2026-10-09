@@ -35,8 +35,15 @@ class MainVM(app: Application) : AndroidViewModel(app) {
     var pending by mutableStateOf<Pending?>(null)
     var rootWarn by mutableStateOf(false)
     var rootOk by mutableStateOf<Boolean?>(null)
+    var rootChecking by mutableStateOf(false)
+    var toolName by mutableStateOf<String?>(null)
+    var crash by mutableStateOf<String?>(null)
+    private val crashFile = java.io.File(app.filesDir, "crash.txt")
+    fun dismissCrash() { crash = null; crashFile.delete() }
+    fun retry() { msgs.lastOrNull { it.role == "user" }?.let { send(it.text) } }
 
     init {
+        runCatching { if (crashFile.exists()) crash = crashFile.readText() }
         runCatching {
             val a = JSONArray(sp.getString("ws", "[]"))
             for (i in 0 until a.length()) workspaces.add(Workspace(a.getJSONObject(i).getString("n"), a.getJSONObject(i).getString("p")))
@@ -54,7 +61,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
 
     fun pickMode(m: Mode) { if (m == Mode.ROOT) rootWarn = true else { mode = m; save() } }
     fun confirmRoot() { rootWarn = false; mode = Mode.ROOT; save(); checkRoot() }
-    fun checkRoot() { viewModelScope.launch(Dispatchers.IO) { rootOk = runCatching { Shell.getShell().isRoot }.getOrDefault(false) } }
+    fun checkRoot() { viewModelScope.launch(Dispatchers.IO) { rootChecking = true; rootOk = runCatching { Shell.getShell().isRoot }.getOrDefault(false); rootChecking = false } }
     fun clearChat() { msgs.clear(); while (hist.length() > 0) hist.remove(0) }
 
     private suspend fun ask(title: String, detail: String): Boolean {
@@ -82,9 +89,11 @@ class MainVM(app: Application) : AndroidViewModel(app) {
                         msgs.add(Msg("tool", "$name ${args.toString().take(300)}"))
                         val risky = name == "shell" || name == "write_file"
                         val ok = if (risky && confirm) ask(name, args.toString(2).take(1500)) else true
+                        toolName = name
                         val res = if (!ok) "Ditolak user." else runCatching {
                             Tools.call(name, args, mode, workspaces[active].path)
                         }.getOrElse { "Error: ${it.message}" }
+                        toolName = null
                         hist.put(JSONObject().put("role", "tool").put("tool_call_id", c.getString("id")).put("content", res))
                     }
                 }

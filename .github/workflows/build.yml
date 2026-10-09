@@ -29,12 +29,23 @@ jobs:
       - name: Build debug + release APK (signed dengan app/release-key.jks)
         run: gradle :app:assembleDebug :app:assembleRelease --stacktrace
 
+      - name: Ukuran APK
+        run: ls -lh app/build/outputs/apk/debug/*.apk app/build/outputs/apk/release/*.apk
+
+      # Artifact dipisah: debug dan release masing-masing sendiri
       - uses: actions/upload-artifact@v4
         with:
-          name: MiraiCode-apk
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/outputs/apk/release/*.apk
+          name: MiraiCode-debug
+          path: app/build/outputs/apk/debug/*.apk
+          compression-level: 9
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MiraiCode-release
+          path: app/build/outputs/apk/release/*.apk
+          compression-level: 9
+          if-no-files-found: error
 
       - name: Publish GitHub Release (tag v*)
         if: startsWith(github.ref, 'refs/tags/v')

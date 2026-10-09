@@ -15,6 +15,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching { java.io.File(filesDir, "crash.txt").writeText(e.stackTraceToString()) }
+            prev?.uncaughtException(t, e)
+        }
         enableEdgeToEdge()
         setContent {
             val vm: MainVM = viewModel()

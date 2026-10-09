@@ -12,6 +12,24 @@ android {
         versionCode = 1
         versionName = "1.0"
     }
+    // Buang resource bahasa lain dari library (Compose/Material punya puluhan locale)
+    androidResources { localeFilters += listOf("en", "id") }
+    // Jangan sisipkan blok metadata dependency di APK
+    dependenciesInfo { includeInApk = false; includeInBundle = false }
+    packaging {
+        resources {
+            excludes += listOf(
+                "/META-INF/{AL2.0,LGPL2.1}",
+                "/META-INF/*.version",
+                "/META-INF/*.kotlin_module",
+                "/META-INF/proguard/**",
+                "/META-INF/com/android/build/gradle/**",
+                "/kotlin/**",
+                "/DebugProbesKt.bin",
+                "/kotlin-tooling-metadata.json",
+            )
+        }
+    }
     buildFeatures { compose = true; aidl = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     signingConfigs {
@@ -25,7 +43,9 @@ android {
     }
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true       // R8: shrink + optimize + obfuscate
+            isShrinkResources = true     // buang resource yang tidak terpakai
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("release")
         }
         debug { signingConfig = signingConfigs.getByName("release") }

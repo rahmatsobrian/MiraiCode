@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.core.content.ContextCompat
 import androidx.compose.material3.ToggleFloatingActionButtonDefaults.animateIcon
 import androidx.graphics.shapes.Morph
+import kotlinx.coroutines.delay
 import androidx.graphics.shapes.toPath
 import rikka.shizuku.Shizuku
 
@@ -54,7 +55,7 @@ import rikka.shizuku.Shizuku
 fun MiraiApp(vm: MainVM) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf("Chat" to Icons.Rounded.Forum, "Workspace" to Icons.Rounded.Folder,
-        "Showcase" to Icons.Rounded.AutoAwesome, "Setelan" to Icons.Rounded.Settings)
+        "Setelan" to Icons.Rounded.Settings)
     val fade = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
     val slide = MaterialTheme.motionScheme.defaultSpatialSpec<IntOffset>()
     Scaffold(bottomBar = {
@@ -69,8 +70,20 @@ fun MiraiApp(vm: MainVM) {
             (fadeIn(fade) + slideInHorizontally(slide) { it / 6 * d }) togetherWith
                 (fadeOut(fade) + slideOutHorizontally(slide) { -it / 6 * d })
         }) { t ->
-            when (t) { 0 -> ChatScreen(vm); 1 -> WorkspaceScreen(vm); 2 -> ShowcaseScreen(); else -> SettingsScreen(vm) }
+            when (t) { 0 -> ChatScreen(vm); 1 -> WorkspaceScreen(vm); else -> SettingsScreen(vm) }
         }
+    }
+    vm.crash?.let { c ->
+        val ctx = LocalContext.current
+        AlertDialog(onDismissRequest = { vm.dismissCrash() },
+            icon = { Icon(Icons.Rounded.Warning, null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Aplikasi sempat crash") },
+            text = { Text(c.take(3500), Modifier.verticalScroll(rememberScrollState()), fontFamily = FontFamily.Monospace, fontSize = 10.sp) },
+            confirmButton = { Button({
+                val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("crash", c)); vm.dismissCrash()
+            }) { Text("Salin & tutup") } },
+            dismissButton = { TextButton({ vm.dismissCrash() }) { Text("Tutup") } })
     }
     vm.pending?.let { p ->
         AlertDialog(onDismissRequest = { p.result.complete(false) },
@@ -97,20 +110,45 @@ fun Page(title: String, actions: @Composable RowScope.() -> Unit = {}, content: 
 fun ChatScreen(vm: MainVM) {
     val ls = rememberLazyListState()
     var input by rememberSaveable { mutableStateOf("") }
+    var menu by remember { mutableStateOf(false) }
     LaunchedEffect(vm.msgs.size, vm.busy) { if (vm.msgs.isNotEmpty()) ls.animateScrollToItem(vm.msgs.lastIndex) }
     Page("MiraiCode", actions = {
         AssistChip(onClick = {}, label = { Text(vm.mode.name) }, leadingIcon = { Icon(Icons.Rounded.Security, null, Modifier.size(18.dp)) })
-        IconButton({ vm.clearChat() }) { Icon(Icons.Rounded.DeleteSweep, "Bersihkan") }
     }) {
-        LazyColumn(Modifier.weight(1f), state = ls, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (vm.msgs.isEmpty()) item { Text("Workspace: ${vm.workspaces[vm.active].path}\nTanya apa saja atau minta AI membaca/menulis file & menjalankan shell.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            items(vm.msgs) { Bubble(it) }
-            if (vm.busy) item { LoadingIndicator(Modifier.size(48.dp)) }
+        AnimatedVisibility(vm.busy) { LinearWavyProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) }
+        Box(Modifier.weight(1f)) {
+            if (vm.msgs.isEmpty()) Column(Modifier.align(Alignment.Center).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                MorphHero()
+                Text("Workspace: ${vm.workspaces[vm.active].path}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                Text("Minta AI membaca/menulis file atau menjalankan shell.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            LazyColumn(Modifier.fillMaxSize(), state = ls, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(vm.msgs) { Bubble(it) }
+                if (vm.busy) item {
+                    val tn = vm.toolName
+                    if (tn != null) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        ContainedLoadingIndicator(Modifier.size(48.dp)); Text("Menjalankan $tn…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else LoadingIndicator(Modifier.size(48.dp))
+                }
+            }
         }
         Row(Modifier.fillMaxWidth().padding(12.dp).imePadding(), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(input, { input = it }, Modifier.weight(1f), placeholder = { Text("Pesan…") }, maxLines = 5, shape = RoundedCornerShape(24.dp))
-            FilledIconButton({ vm.send(input); input = "" }, enabled = !vm.busy && input.isNotBlank(), modifier = Modifier.size(56.dp)) {
-                Icon(Icons.AutoMirrored.Rounded.Send, "Kirim")
+            Box {
+                SplitButtonLayout(leadingButton = {
+                    SplitButtonDefaults.LeadingButton({ if (input.isNotBlank()) { vm.send(input); input = "" } }) {
+                        Icon(Icons.AutoMirrored.Rounded.Send, "Kirim", Modifier.size(SplitButtonDefaults.LeadingIconSize))
+                    }
+                }, trailingButton = {
+                    SplitButtonDefaults.TrailingButton(checked = menu, onCheckedChange = { menu = it }) {
+                        val r by animateFloatAsState(if (menu) 180f else 0f, label = "arrow")
+                        Icon(Icons.Rounded.KeyboardArrowDown, null, Modifier.size(SplitButtonDefaults.TrailingIconSize).graphicsLayer { rotationZ = r })
+                    }
+                })
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(text = { Text("Ulangi pesan terakhir") }, leadingIcon = { Icon(Icons.Rounded.Refresh, null) }, onClick = { menu = false; vm.retry() })
+                    DropdownMenuItem(text = { Text("Bersihkan chat") }, leadingIcon = { Icon(Icons.Rounded.DeleteSweep, null) }, onClick = { menu = false; vm.clearChat() })
+                }
             }
         }
     }
@@ -190,7 +228,8 @@ fun Choice(options: List<String>, sel: Int, onSel: (Int) -> Unit) =
         options.forEachIndexed { i, o ->
             customItem(buttonGroupContent = {
                 val src = remember { MutableInteractionSource() }
-                ToggleButton(sel == i, { onSel(i) }, Modifier.animateWidth(src), interactionSource = src) { Text(o, maxLines = 1) }
+                if (sel == i) Button({ onSel(i) }, Modifier.animateWidth(src), interactionSource = src) { Text(o, maxLines = 1) }
+                else OutlinedButton({ onSel(i) }, Modifier.animateWidth(src), interactionSource = src) { Text(o, maxLines = 1) }
             }, menuContent = { DropdownMenuItem(text = { Text(o) }, onClick = { onSel(i) }) })
         }
     }
@@ -239,6 +278,9 @@ fun SettingsScreen(vm: MainVM) {
                     Mode.SHIZUKU -> "Menengah: shell uid 2000 (adb). Akses lebih luas dari app biasa, tidak penuh."
                     Mode.ROOT -> "Penuh: seluruh sistem. Berisiko tinggi." + (vm.rootOk?.let { if (it) " (root terdeteksi)" else " (root TIDAK tersedia)" } ?: "")
                 }, style = MaterialTheme.typography.bodySmall)
+                if (vm.rootChecking) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularWavyProgressIndicator(Modifier.size(40.dp)); Text("Memeriksa akses root…")
+                }
                 SwitchRow("Konfirmasi perintah", "Minta persetujuan sebelum shell/tulis file", vm.confirm) { vm.confirm = it; vm.save() }
             }
             Section("Izin") {
@@ -263,90 +305,22 @@ fun SettingsScreen(vm: MainVM) {
     }
 }
 
-// ───────────── Showcase ─────────────
+// ───────────── Hero morph (empty state chat) ─────────────
 @Composable
-fun ShowcaseScreen() {
-    val t = rememberInfiniteTransition(label = "p")
-    val p by t.animateFloat(0f, 1f, infiniteRepeatable(tween(2500, easing = LinearEasing)), label = "p")
-    var s1 by remember { mutableStateOf(true) }; var s2 by remember { mutableStateOf(false) }
-    var exp by remember { mutableStateOf(false) }
-    Page("Showcase") {
-        Box(Modifier.fillMaxSize()) {
-            Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp, 8.dp, 16.dp, 120.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Section("Loading Indicator") {
-                    Row(horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.CenterVertically) {
-                        LoadingIndicator(); ContainedLoadingIndicator()
-                    }
-                }
-                Section("Progress (wavy)") {
-                    LinearWavyProgressIndicator(progress = { p }, modifier = Modifier.fillMaxWidth())
-                    LinearWavyProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                        CircularWavyProgressIndicator(progress = { p }); CircularWavyProgressIndicator()
-                    }
-                }
-                Section("Switch (✓ / ✕)") {
-                    SwitchRow("Opsi A", "Aktif", s1) { s1 = it }
-                    SwitchRow("Opsi B", "Nonaktif", s2) { s2 = it }
-                }
-                Section("List (dynamic corner)") {
-                    val items = listOf("Kode" to Icons.Rounded.Code, "Terminal" to Icons.Rounded.Terminal, "File" to Icons.Rounded.Description)
-                    Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
-                        items.forEachIndexed { i, (n, ic) ->
-                            SegmentedListItem(onClick = {}, shapes = ListItemDefaults.segmentedShapes(i, items.size),
-                                leadingContent = { Icon(ic, null) }, supportingContent = { Text("Supporting text $n") },
-                                trailingContent = { Icon(Icons.Rounded.ChevronRight, null) }) { Text(n) }
-                        }
-                    }
-                }
-                Section("Button") {
-                    ButtonGroup(overflowIndicator = { }, modifier = Modifier.fillMaxWidth()) {
-                        listOf("Satu", "Dua", "Tiga").forEach { l ->
-                            customItem(buttonGroupContent = {
-                                val src = remember { MutableInteractionSource() }
-                                Button({}, Modifier.animateWidth(src), interactionSource = src) { Text(l) }
-                            }, menuContent = { DropdownMenuItem(text = { Text(l) }, onClick = {}) })
-                        }
-                    }
-                    SplitButtonLayout(leadingButton = {
-                        SplitButtonDefaults.LeadingButton({}) {
-                            Icon(Icons.Rounded.PlayArrow, null, Modifier.size(SplitButtonDefaults.LeadingIconSize))
-                            Spacer(Modifier.width(8.dp)); Text("Jalankan")
-                        }
-                    }, trailingButton = {
-                        SplitButtonDefaults.TrailingButton(checked = exp, onCheckedChange = { exp = it }) {
-                            val r by animateFloatAsState(if (exp) 180f else 0f, label = "arrow")
-                            Icon(Icons.Rounded.KeyboardArrowDown, null, Modifier.size(SplitButtonDefaults.TrailingIconSize).graphicsLayer { rotationZ = r })
-                        }
-                    })
-                }
-                Section("Shape morphing") { MorphShowcase() }
-            }
-            FabMenu(Modifier.align(Alignment.BottomEnd).padding(16.dp),
-                listOf("Edit" to Icons.Rounded.Edit, "Bagikan" to Icons.Rounded.Share)) {}
-        }
-    }
-}
-
-@Composable
-fun MorphShowcase() {
-    val shapes = listOf("Cookie9" to MaterialShapes.Cookie9Sided, "SoftBurst" to MaterialShapes.SoftBurst, "Pill" to MaterialShapes.Pill,
-        "Clover" to MaterialShapes.Clover4Leaf, "Sunny" to MaterialShapes.Sunny, "Flower" to MaterialShapes.Flower)
+fun MorphHero() {
+    val shapes = listOf(MaterialShapes.Cookie9Sided, MaterialShapes.SoftBurst, MaterialShapes.Pill,
+        MaterialShapes.Clover4Leaf, MaterialShapes.Sunny, MaterialShapes.Flower)
     var from by remember { mutableIntStateOf(0) }; var to by remember { mutableIntStateOf(0) }
     val prog = remember { Animatable(0f) }
     val spec = MaterialTheme.motionScheme.slowSpatialSpec<Float>()
-    val morph = remember(from, to) { Morph(shapes[from].second, shapes[to].second) }
+    val morph = remember(from, to) { Morph(shapes[from], shapes[to]) }
+    LaunchedEffect(Unit) { while (true) { delay(2600); from = to; to = (to + 1) % shapes.size } }
     LaunchedEffect(to) { prog.snapTo(0f); prog.animateTo(1f, spec) }
-    val color = MaterialTheme.colorScheme.primary
-    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-    Canvas(Modifier.size(160.dp)) {
+    val color = MaterialTheme.colorScheme.primaryContainer
+    Canvas(Modifier.size(120.dp)) {
         val b = morph.calculateBounds()
         val sc = size.minDimension / maxOf(b[2] - b[0], b[3] - b[1])
         val path = morph.toPath(prog.value).asComposePath()
         withTransform({ scale(sc, sc, Offset.Zero); translate(-b[0], -b[1]) }) { drawPath(path, color) }
-    }
-    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        shapes.forEachIndexed { i, (n, _) -> FilterChip(selected = to == i, onClick = { from = to; to = i }, label = { Text(n) }) }
-    }
     }
 }
