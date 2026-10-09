@@ -34,6 +34,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.IntOffset
@@ -51,8 +52,12 @@ fun MiraiApp(vm: MainVM) {
         "Setelan" to Icons.Rounded.Settings)
     val fade = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
     val slide = MaterialTheme.motionScheme.defaultSpatialSpec<IntOffset>()
-    Scaffold(bottomBar = {
-        ShortNavigationBar {
+    // Keyboard terbuka -> sembunyikan nav bar, supaya tidak ada ruang kosong di atas keyboard
+    val imeOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    // contentWindowInsets=0: TopAppBar & NavigationBar sudah mengurus inset-nya sendiri
+    // (sebelumnya inset terhitung dobel -> jarak kosong besar di atas & di bawah)
+    Scaffold(contentWindowInsets = WindowInsets(0, 0, 0, 0), bottomBar = {
+        if (!imeOpen) ShortNavigationBar {
             tabs.forEachIndexed { i, (l, ic) ->
                 ShortNavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Icon(ic, null) }, label = { Text(l) })
             }
@@ -257,7 +262,7 @@ fun SettingsScreen(vm: MainVM) {
     val shizukuUp = remember(tick) { runCatching { Shizuku.pingBinder() }.getOrDefault(false) }
     val shizukuOk = remember(tick) { runCatching { shizukuUp && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED }.getOrDefault(false) }
     Page("Setelan") {
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Column(Modifier.imePadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Section("Provider AI (OpenAI-compatible)") {
                 OutlinedTextField(vm.baseUrl, { vm.baseUrl = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("Endpoint (base URL)") }, singleLine = true)
                 OutlinedTextField(vm.apiKey, { vm.apiKey = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("API key") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
