@@ -659,6 +659,61 @@ fun Section(title: String, content: @Composable ColumnScope.() -> Unit) =
         }
     }
 
+// ───────────── Connected list (shape morphing) ─────────────
+/** Grup item yang menyatu: sudut luar besar, sudut dalam kecil, morph jadi bulat penuh saat ditekan. */
+@Composable
+fun SettingGroup(title: String, vararg rows: @Composable (Int, Int) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
+        Text(title, Modifier.padding(start = 16.dp, bottom = 6.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        rows.forEachIndexed { i, r -> r(i, rows.size) }
+    }
+}
+
+@Composable
+fun SettingRow(
+    i: Int, n: Int, title: String, sub: String?, icon: ImageVector?, onClick: () -> Unit,
+    enabled: Boolean = true, trailing: @Composable () -> Unit = {}
+) = SegmentedListItem(
+    onClick = onClick, shapes = ListItemDefaults.segmentedShapes(i, n), enabled = enabled,
+    leadingContent = if (icon != null) ({ Icon(icon, null) }) else null,
+    supportingContent = if (sub != null) ({ Text(sub) }) else null,
+    trailingContent = trailing
+) { Text(title, fontWeight = FontWeight.Medium) }
+
+/** Baris dengan nilai saat ini + panah naik/turun; klik membuka daftar pilihan mengambang. */
+@Composable
+fun DropdownRow(i: Int, n: Int, title: String, sub: String?, icon: ImageVector?, options: List<String>, sel: Int, onSel: (Int) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    var open by remember { mutableStateOf(false) }
+    SettingRow(i, n, title, sub, icon, { open = true }) {
+        Box {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(options.getOrElse(sel) { "" }, style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
+                Icon(Icons.Rounded.UnfoldMore, null, tint = cs.onSurfaceVariant)
+            }
+            DropdownMenu(open, { open = false }, shape = RoundedCornerShape(24.dp)) {
+                options.forEachIndexed { j, o ->
+                    DropdownMenuItem(
+                        text = { Text(o, color = if (j == sel) cs.primary else cs.onSurface) },
+                        onClick = { open = false; onSel(j) },
+                        trailingIcon = if (j == sel) ({ Icon(Icons.Rounded.Check, null, tint = cs.primary) }) else null
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SwitchSettingRow(i: Int, n: Int, title: String, sub: String, icon: ImageVector?, checked: Boolean, onChange: (Boolean) -> Unit) =
+    SettingRow(i, n, title, sub, icon, { onChange(!checked) }) {
+        Switch(checked, null, thumbContent = {
+            Crossfade(checked, label = "thumb") { on ->
+                Icon(if (on) Icons.Rounded.Check else Icons.Rounded.Close, null, Modifier.size(SwitchDefaults.IconSize))
+            }
+        })
+    }
+
 @Composable
 fun SettingsScreen(vm: MainVM) {
     val ctx = LocalContext.current
@@ -679,51 +734,48 @@ fun SettingsScreen(vm: MainVM) {
                 OutlinedTextField(vm.model, { vm.model = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("Model") }, singleLine = true)
                 OutlinedTextField(vm.system, { vm.system = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("System prompt") }, minLines = 3)
             }
-            Section("Mode akses") {
-                Choice(listOf("Non-root", "Shizuku", "Root"), vm.mode.ordinal) { vm.pickMode(Mode.entries[it]) }
-                Text(when (vm.mode) {
-                    Mode.NONROOT -> "Terbatas: sandbox app + storage yang diizinkan (semua file lewat izin 'All files access')."
-                    Mode.SHIZUKU -> "Menengah: shell uid 2000 (adb). Akses lebih luas dari app biasa, tidak penuh."
-                    Mode.ROOT -> "Penuh: seluruh sistem. Berisiko tinggi." + (vm.rootOk?.let { if (it) " (root terdeteksi)" else " (root TIDAK tersedia)" } ?: "")
-                }, style = MaterialTheme.typography.bodySmall)
-                SwitchRow("Konfirmasi perintah", "Minta persetujuan sebelum shell/tulis file", vm.confirm, Icons.Rounded.VerifiedUser) { vm.confirm = it; vm.save() }
-            }
-            Section("Izin") {
-                SettingCard("Akses semua file", if (allFiles) "Diberikan" else "Belum diberikan",
-                    if (allFiles) Icons.Rounded.CheckCircle else Icons.Rounded.Folder, active = allFiles) {
-                    FilledTonalButton({
-                        if (Build.VERSION.SDK_INT >= 30) ctx.startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${ctx.packageName}")))
-                        else perm.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE))
-                    }, contentPadding = PaddingValues(horizontal = 16.dp)) { Text(if (allFiles) "Ubah" else "Izinkan") }
-                }
-                SettingCard("Shizuku", if (!shizukuUp) "Tidak berjalan" else if (shizukuOk) "Berjalan, izin diberikan" else "Berjalan, izin belum diberikan",
-                    Icons.Rounded.Adb, active = shizukuUp && shizukuOk) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton({ tick++ }) { Icon(Icons.Rounded.Refresh, "Segarkan") }
-                        if (shizukuUp && !shizukuOk) FilledTonalButton({ runCatching { Shizuku.requestPermission(0) }; tick++ }, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Izinkan") }
-                    }
-                }
-                val cs = MaterialTheme.colorScheme
-                val su = remember(vm.rootOk) { vm.suBinaryVisible() }
-                SettingCard("Akses root aplikasi",
+            SettingGroup("Akses",
+                { i, n -> DropdownRow(i, n, "Mode akses",
+                    when (vm.mode) {
+                        Mode.NONROOT -> "Terbatas: sandbox app + storage yang diizinkan (semua file lewat izin 'All files access')."
+                        Mode.SHIZUKU -> "Menengah: shell uid 2000 (adb). Akses lebih luas dari app biasa, tidak penuh."
+                        Mode.ROOT -> "Penuh: seluruh sistem. Berisiko tinggi." + (vm.rootOk?.let { if (it) " (root terdeteksi)" else " (root TIDAK tersedia)" } ?: "")
+                    }, Icons.Rounded.AdminPanelSettings, listOf("Non-root", "Shizuku", "Root"), vm.mode.ordinal) { vm.pickMode(Mode.entries[it]) } },
+                { i, n -> SwitchSettingRow(i, n, "Konfirmasi perintah", "Minta persetujuan sebelum shell/tulis file", Icons.Rounded.VerifiedUser, vm.confirm) { vm.confirm = it; vm.save() } }
+            )
+            val cs = MaterialTheme.colorScheme
+            val su = remember(vm.rootOk) { vm.suBinaryVisible() }
+            SettingGroup("Izin",
+                { i, n -> SettingRow(i, n, "Akses semua file", if (allFiles) "Diberikan" else "Belum diberikan", Icons.Rounded.Folder, {
+                    if (Build.VERSION.SDK_INT >= 30) ctx.startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${ctx.packageName}")))
+                    else perm.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE))
+                }) { Icon(if (allFiles) Icons.Rounded.CheckCircle else Icons.Rounded.ChevronRight, null, tint = if (allFiles) cs.primary else cs.onSurfaceVariant) } },
+                { i, n -> SettingRow(i, n, "Shizuku",
+                    if (!shizukuUp) "Tidak berjalan (ketuk untuk menyegarkan)" else if (shizukuOk) "Berjalan, izin diberikan" else "Berjalan, izin belum diberikan (ketuk untuk meminta)",
+                    Icons.Rounded.Adb, { runCatching { if (shizukuUp && !shizukuOk) Shizuku.requestPermission(0) }; tick++ }) {
+                    if (shizukuUp && shizukuOk) Icon(Icons.Rounded.CheckCircle, null, tint = cs.primary)
+                    else Icon(Icons.Rounded.Refresh, null, tint = cs.onSurfaceVariant)
+                } },
+                { i, n -> SettingRow(i, n, "Akses root aplikasi",
                     when {
                         vm.rootChecking -> "Memeriksa… setujui permintaan root jika muncul."
                         vm.rootOk == true -> "Sudah diberikan. MiraiCode bisa menjalankan perintah sebagai root."
-                        vm.rootOk == false -> "Belum diberikan / tidak tersedia. " + if (su) "su terdeteksi: izinkan MiraiCode di Magisk/KernelSU, lalu periksa ulang." else "su tidak terdeteksi, perangkat mungkin tidak ter-root."
-                        else -> "Belum diperiksa. " + if (su) "su terdeteksi di perangkat." else "su tidak terlihat oleh aplikasi (belum tentu tidak ter-root)."
+                        vm.rootOk == false -> "Belum diberikan / tidak tersedia. " + if (su) "su terdeteksi: izinkan MiraiCode di Magisk/KernelSU, lalu ketuk untuk periksa ulang." else "su tidak terdeteksi, perangkat mungkin tidak ter-root."
+                        else -> "Belum diperiksa (ketuk untuk memeriksa). " + if (su) "su terdeteksi di perangkat." else "su tidak terlihat oleh aplikasi (belum tentu tidak ter-root)."
                     },
-                    when (vm.rootOk) { true -> Icons.Rounded.CheckCircle; false -> Icons.Rounded.Cancel; null -> Icons.Rounded.Security },
-                    active = vm.rootOk == true, tint = if (vm.rootOk == false) cs.error else null) {
+                    Icons.Rounded.Security, { vm.checkRoot() }, enabled = !vm.rootChecking) {
                     if (vm.rootChecking) LoadingIndicator(Modifier.size(32.dp))
-                }
-                FilledTonalButton({ vm.checkRoot() }, Modifier.fillMaxWidth().defaultMinSize(minHeight = 52.dp), enabled = !vm.rootChecking) {
-                    Text(if (vm.rootOk == null) "Periksa akses root" else "Periksa ulang")
-                }
-            }
-            Section("Tampilan") {
-                Choice(listOf("Sistem", "Terang", "Gelap", "AMOLED"), vm.theme) { vm.theme = it; vm.save() }
-                SwitchRow("Dynamic color", if (Build.VERSION.SDK_INT >= 31) "Ikuti wallpaper (Android 12+)" else "Perlu Android 12+", vm.dynamic, Icons.Rounded.Palette) { vm.dynamic = it; vm.save() }
-            }
+                    else when (vm.rootOk) {
+                        true -> Icon(Icons.Rounded.CheckCircle, "Diberikan", tint = cs.primary)
+                        false -> Icon(Icons.Rounded.Cancel, "Belum", tint = cs.error)
+                        null -> Icon(Icons.Rounded.Info, "Belum diperiksa", tint = cs.onSurfaceVariant)
+                    }
+                } }
+            )
+            SettingGroup("Tampilan",
+                { i, n -> DropdownRow(i, n, "Tema", null, Icons.Rounded.DarkMode, listOf("Sistem", "Terang", "Gelap", "AMOLED"), vm.theme) { vm.theme = it; vm.save() } },
+                { i, n -> SwitchSettingRow(i, n, "Dynamic color", if (Build.VERSION.SDK_INT >= 31) "Ikuti wallpaper (Android 12+)" else "Perlu Android 12+", Icons.Rounded.Palette, vm.dynamic) { vm.dynamic = it; vm.save() } }
+            )
         }
     }
 }
