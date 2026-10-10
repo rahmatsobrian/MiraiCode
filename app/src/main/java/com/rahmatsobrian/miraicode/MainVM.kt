@@ -1,6 +1,7 @@
 package com.rahmatsobrian.miraicode
 
 import android.app.Application
+import android.net.Uri
 import androidx.compose.runtime.*
 import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
@@ -17,6 +18,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 data class Workspace(val name: String, val path: String)
+/** Lampiran: file teks/kode (dimasukkan ke prompt) atau gambar (JPEG base64, dikirim sebagai image_url). */
+class Attachment(val name: String, val text: String? = null, val imageB64: String? = null, val thumb: android.graphics.Bitmap? = null)
 data class Msg(val role: String, val text: String, val extra: String = "")
 class Pending(val title: String, val detail: String, val result: CompletableDeferred<Boolean> = CompletableDeferred())
 
@@ -44,6 +47,54 @@ class MainVM(app: Application) : AndroidViewModel(app) {
     private val crashFile = java.io.File(app.filesDir, "crash.txt")
     fun dismissCrash() { crash = null; crashFile.delete() }
     private var job: Job? = null
+    val attachments = mutableStateListOf<Attachment>()
+
+    private fun toast(t: String) = android.widget.Toast.makeText(getApplication(), t, android.widget.Toast.LENGTH_SHORT).show()
+    private fun displayName(uri: Uri, fallback: String): String = runCatching {
+        getApplication<Application>().contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { if (it.moveToFirst()) it.getString(0) else null }
+    }.getOrNull() ?: fallback
+
+    fun addFile(uri: Uri) {
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) {
+                runCatching {
+                    val cr = getApplication<Application>().contentResolver
+                    val bytes = cr.openInputStream(uri)!!.use { it.readNBytes(200_001) }
+                    if (bytes.take(4096).any { it == 0.toByte() }) error("Hanya file teks/kode yang didukung")
+                    val cut = bytes.size > 200_000
+                    var t = String(bytes, 0, minOf(bytes.size, 200_000), Charsets.UTF_8)
+                    if (cut) t += "
+… (dipotong, file lebih dari 200 KB)"
+                    Attachment(displayName(uri, "file.txt"), text = t)
+                }
+            }
+            r.onSuccess { attachments.add(it) }.onFailure { toast(it.message ?: "Gagal membaca file") }
+        }
+    }
+
+    fun addImage(uri: Uri) {
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) {
+                runCatching {
+                    val cr = getApplication<Application>().contentResolver
+                    // ImageDecoder menerapkan rotasi EXIF otomatis; dikecilkan ke maks 1280px agar request ringan
+                    val bmp = android.graphics.ImageDecoder.decodeBitmap(android.graphics.ImageDecoder.createSource(cr, uri)) { d, info, _ ->
+                        val m = maxOf(info.size.width, info.size.height)
+                        if (m > 1280) { val f = 1280f / m; d.setTargetSize((info.size.width * f).toInt().coerceAtLeast(1), (info.size.height * f).toInt().coerceAtLeast(1)) }
+                        d.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+                    }
+                    val bos = java.io.ByteArrayOutputStream()
+                    bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, bos)
+                    val f = 160f / maxOf(bmp.width, bmp.height)
+                    val th = android.graphics.Bitmap.createScaledBitmap(bmp, (bmp.width * f).toInt().coerceAtLeast(1), (bmp.height * f).toInt().coerceAtLeast(1), true)
+                    Attachment(displayName(uri, "foto.jpg"), imageB64 = android.util.Base64.encodeToString(bos.toByteArray(), android.util.Base64.NO_WRAP), thumb = th)
+                }
+            }
+            r.onSuccess { attachments.add(it) }.onFailure { toast("Gagal membaca gambar") }
+        }
+    }
+    fun removeAttachment(i: Int) { if (i in attachments.indices) attachments.removeAt(i) }
     private val chatFile = java.io.File(app.filesDir, "chat.json")
 
     /** Hentikan generate: putus koneksi, tolak konfirmasi yang menunggu, batalkan coroutine. */
@@ -110,10 +161,23 @@ class MainVM(app: Application) : AndroidViewModel(app) {
     }
 
     fun send(text: String) {
-        if (busy || text.isBlank()) return
+        val atts = attachments.toList()
+        if (busy || (text.isBlank() && atts.isEmpty())) return
+        attachments.clear()
         busy = true
         job = viewModelScope.launch {
-            msgs.add(Msg("user", text)); hist.put(JSONObject().put("role", "user").put("content", text))
+            // File teks masuk ke prompt; gambar dikirim sebagai image_url (butuh model yang mendukung vision)
+            val full = buildString {
+                append(text)
+                atts.filter { it.text != null }.forEach { append("\n\n[File: ${it.name}]\n```\n${it.text}\n```") }
+            }.trim()
+            val images = atts.filter { it.imageB64 != null }
+            val content: Any = if (images.isEmpty()) full else JSONArray().apply {
+                put(JSONObject().put("type", "text").put("text", full.ifBlank { "Lihat gambar ini." }))
+                images.forEach { put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", "data:image/jpeg;base64,${it.imageB64}"))) }
+            }
+            msgs.add(Msg("user", text, atts.joinToString("\n") { (if (it.imageB64 != null) "🖼 " else "📎 ") + it.name }))
+            hist.put(JSONObject().put("role", "user").put("content", content))
             val base = hist.length(); var done = false
             try {
                 for (step in 0 until 8) {

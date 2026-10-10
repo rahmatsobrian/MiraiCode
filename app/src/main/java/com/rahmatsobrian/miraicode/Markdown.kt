@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -268,7 +269,7 @@ private fun CodeBlock(lang: String, code: String) {
     val cs = MaterialTheme.colorScheme
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) { if (copied) { delay(1500); copied = false } }
-    Surface(color = cs.surfaceContainerLowest, contentColor = cs.onSurface, shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+    Surface(color = cs.surfaceContainerLow, contentColor = cs.onSurface, shape = RoundedCornerShape(14.dp), border = BorderStroke(1.dp, cs.outlineVariant.copy(alpha = 0.5f)), modifier = Modifier.fillMaxWidth()) {
         Column {
             Row(Modifier.fillMaxWidth().background(cs.surfaceContainerHigh).padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(lang.ifBlank { "kode" }, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)

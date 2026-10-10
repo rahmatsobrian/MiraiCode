@@ -20,7 +20,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.core.content.FileProvider
+import java.io.File
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.graphics.SolidColor
 import kotlinx.coroutines.launch
@@ -60,6 +70,7 @@ fun MiraiApp(vm: MainVM) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     // Navigasi pindah dari bottom bar ke sidebar (drawer) -> area chat lebih luas
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {   // memberi warna latar + warna teks/ikon default
     ModalNavigationDrawer(drawerState = drawer, drawerContent = {
         ModalDrawerSheet(Modifier.width(280.dp)) {
             Column(Modifier.verticalScroll(rememberScrollState())) {
@@ -82,7 +93,7 @@ fun MiraiApp(vm: MainVM) {
             }
         }
     }) {
-        CompositionLocalProvider(LocalOpenDrawer provides { scope.launch { drawer.open() } }) {
+        CompositionLocalProvider(LocalOpenDrawer provides { scope.launch { drawer.open() } }, LocalGoTab provides { tab = it }) {
             AnimatedContent(tab, modifier = Modifier.fillMaxSize(), label = "nav", transitionSpec = {
                 val d = if (targetState > initialState) 1 else -1
                 (fadeIn(fade) + slideInHorizontally(slide) { it / 6 * d }) togetherWith
@@ -91,6 +102,7 @@ fun MiraiApp(vm: MainVM) {
                 when (t) { 0 -> ChatScreen(vm); 1 -> WorkspaceScreen(vm); else -> SettingsScreen(vm) }
             }
         }
+    }
     }
     vm.crash?.let { c ->
         val ctx = LocalContext.current
@@ -121,6 +133,7 @@ fun MiraiApp(vm: MainVM) {
 }
 
 val LocalOpenDrawer = staticCompositionLocalOf<() -> Unit> { {} }
+val LocalGoTab = staticCompositionLocalOf<(Int) -> Unit> { {} }
 
 /** Header ringkas 48dp (sebelumnya TopAppBar ~64dp + inset ganda) dengan tombol sidebar. */
 @Composable
@@ -142,23 +155,32 @@ fun Page(title: String, actions: @Composable RowScope.() -> Unit = {}, bottomIns
 fun ChatScreen(vm: MainVM) {
     val ls = rememberLazyListState()
     val ctx = LocalContext.current
+    val cs = MaterialTheme.colorScheme
+    val density = LocalDensity.current
     var input by rememberSaveable { mutableStateOf("") }
-    var menu by remember { mutableStateOf(false) }
+    var sheet by remember { mutableStateOf(false) }
+    var inputH by remember { mutableStateOf(76.dp) }
+    val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { it?.let(vm::addImage) }
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(vm::addFile) }
+    var camUri by remember { mutableStateOf<Uri?>(null) }
+    val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok -> if (ok) camUri?.let(vm::addImage) }
     LaunchedEffect(vm.msgs.size, vm.busy) {
         if (vm.msgs.isNotEmpty()) ls.animateScrollToItem(if (vm.busy) vm.msgs.size else vm.msgs.lastIndex)
     }
     Page("MiraiCode", actions = {
         AssistChip(onClick = {}, label = { Text(vm.mode.name) }, leadingIcon = { Icon(Icons.Rounded.Security, null, Modifier.size(18.dp)) })
     }, bottomInset = false) {
-        Box(Modifier.weight(1f)) {
-            if (vm.msgs.isEmpty()) Column(Modifier.align(Alignment.Center).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Workspace: ${vm.workspaces[vm.active].path}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-                Text("Minta AI membaca/menulis file atau menjalankan shell.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // Box mengikuti keyboard/nav bar. Daftar chat memenuhi seluruh area dan kartu input melayang di atasnya,
+        // jadi area di sekeliling kartu transparan (pesan terlihat lewat belakang, memudar halus ke latar).
+        Box(Modifier.weight(1f).windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
+            if (vm.msgs.isEmpty()) Column(Modifier.align(Alignment.Center).padding(start = 32.dp, end = 32.dp, bottom = inputH), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Workspace: ${vm.workspaces[vm.active].path}", color = cs.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                Text("Minta AI membaca/menulis file atau menjalankan shell.", color = cs.onSurfaceVariant)
                 listOf("Tampilkan isi workspace", "Buat file hello.html sederhana", "Jelaskan struktur proyek ini").forEach {
                     SuggestionChip(onClick = { vm.send(it) }, label = { Text(it) })
                 }
             }
-            LazyColumn(Modifier.fillMaxSize(), state = ls, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyColumn(Modifier.fillMaxSize(), state = ls, contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = inputH + 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 itemsIndexed(vm.msgs) { i, m ->
                     Bubble(m, i, isLast = i == vm.msgs.lastIndex, busy = vm.busy,
                         onEdit = { idx -> vm.rollback(idx)?.let { input = it } }, onRetry = { vm.retry() })
@@ -166,56 +188,145 @@ fun ChatScreen(vm: MainVM) {
                 if (vm.busy) item {
                     val tn = vm.toolName
                     if (tn != null) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        ContainedLoadingIndicator(Modifier.size(48.dp)); Text("Menjalankan $tn…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        ContainedLoadingIndicator(Modifier.size(48.dp)); Text("Menjalankan $tn…", color = cs.onSurfaceVariant)
                     } else LoadingIndicator(Modifier.size(48.dp))
                 }
             }
-        }
-        // Kolom input + tombol dalam satu kartu (gaya Gemini).
-        // Satu baris: [ + ] teks [ kirim ]. Teks panjang: teks di atas, tombol turun ke baris bawah.
-        // Satu BasicTextField yang sama dipakai di kedua mode, jadi fokus/keyboard tidak hilang saat berpindah.
-        val cs = MaterialTheme.colorScheme
-        var expanded by remember { mutableStateOf(false) }
-        LaunchedEffect(input) { if (input.isEmpty()) expanded = false }
-        val sidePad by animateDpAsState(if (expanded) 16.dp else 52.dp, label = "sidePad")
-        val botPad by animateDpAsState(if (expanded) 52.dp else 14.dp, label = "botPad")
-        Surface(
-            color = cs.surfaceContainerHigh, shape = RoundedCornerShape(28.dp),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)
-                .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
-        ) {
-            Box(Modifier.fillMaxWidth().heightIn(min = 52.dp).animateContentSize()) {
-                BasicTextField(
-                    value = input, onValueChange = { input = it },
-                    modifier = Modifier.fillMaxWidth().padding(start = sidePad, end = sidePad, top = 14.dp, bottom = botPad),
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = cs.onSurface),
-                    cursorBrush = SolidColor(cs.primary), maxLines = 8,
-                    onTextLayout = { if (it.lineCount > 1) expanded = true },
-                    decorationBox = { inner ->
-                        Box { if (input.isEmpty()) Text("Pesan…", color = cs.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge); inner() }
+            // Pudar halus di atas kartu input
+            Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(inputH + 12.dp)
+                .background(Brush.verticalGradient(0f to Color.Transparent, 0.45f to cs.background.copy(alpha = 0.85f), 1f to cs.background)))
+
+            // ── Kartu input ala Gemini/Claude ──
+            val canSend = vm.busy || input.isNotBlank() || vm.attachments.isNotEmpty()
+            var expanded by remember { mutableStateOf(false) }
+            LaunchedEffect(input) { if (input.isEmpty()) expanded = false }
+            val sidePad by animateDpAsState(if (expanded) 16.dp else 52.dp, label = "sidePad")
+            val botPad by animateDpAsState(if (expanded) 52.dp else 14.dp, label = "botPad")
+            Surface(
+                color = cs.surfaceContainerHigh, shape = RoundedCornerShape(28.dp),
+                border = BorderStroke(1.dp, cs.outlineVariant.copy(alpha = 0.5f)),
+                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)
+                    .onSizeChanged { inputH = with(density) { it.height.toDp() } + 16.dp }
+            ) {
+                Column {
+                    if (vm.attachments.isNotEmpty()) Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, top = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) { vm.attachments.forEachIndexed { i, a -> AttachmentChip(a) { vm.removeAttachment(i) } } }
+                    Box(Modifier.fillMaxWidth().heightIn(min = 52.dp).animateContentSize()) {
+                        BasicTextField(
+                            value = input, onValueChange = { input = it },
+                            modifier = Modifier.fillMaxWidth().padding(start = sidePad, end = sidePad, top = 14.dp, bottom = botPad),
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(color = cs.onSurface),
+                            cursorBrush = SolidColor(cs.primary), maxLines = 8,
+                            onTextLayout = { if (it.lineCount > 1) expanded = true },
+                            decorationBox = { inner ->
+                                Box { if (input.isEmpty()) Text("Pesan…", color = cs.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge); inner() }
+                            }
+                        )
+                        FilledTonalIconButton(
+                            onClick = { sheet = true },
+                            modifier = Modifier.align(Alignment.BottomStart).padding(6.dp).size(40.dp),
+                            colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = cs.surfaceContainerHighest, contentColor = cs.onSurface)
+                        ) { Icon(Icons.Rounded.Add, "Tambahkan ke chat") }
+                        FilledIconButton(
+                            onClick = { if (vm.busy) vm.stop() else if (canSend) { vm.send(input.trim()); input = "" } },
+                            modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp).size(40.dp), enabled = canSend,
+                            colors = IconButtonDefaults.filledIconButtonColors(disabledContainerColor = cs.surfaceContainerHighest, disabledContentColor = cs.onSurfaceVariant.copy(alpha = 0.5f))
+                        ) { if (vm.busy) Icon(Icons.Rounded.Stop, "Berhenti") else Icon(Icons.Rounded.ArrowUpward, "Kirim") }
                     }
-                )
-                // Menu (kiri bawah)
-                Box(Modifier.align(Alignment.BottomStart).padding(6.dp)) {
-                    IconButton({ menu = !menu }, Modifier.size(40.dp)) {
-                        val r by animateFloatAsState(if (menu) 45f else 0f, label = "plus")
-                        Icon(Icons.Rounded.Add, "Menu", Modifier.graphicsLayer { rotationZ = r })
-                    }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("Ulangi pesan terakhir") }, leadingIcon = { Icon(Icons.Rounded.Refresh, null) }, enabled = !vm.busy, onClick = { menu = false; vm.retry() })
-                        DropdownMenuItem(text = { Text("Salin seluruh chat") }, leadingIcon = { Icon(Icons.Rounded.ContentCopy, null) }, enabled = vm.msgs.isNotEmpty(), onClick = { menu = false; copyToClipboard(ctx, vm.transcript()) })
-                        DropdownMenuItem(text = { Text("Bersihkan chat") }, leadingIcon = { Icon(Icons.Rounded.DeleteSweep, null) }, enabled = !vm.busy, onClick = { menu = false; vm.clearChat() })
-                    }
-                }
-                // Kirim / Berhenti (kanan bawah)
-                FilledIconButton(
-                    onClick = { if (vm.busy) vm.stop() else if (input.isNotBlank()) { vm.send(input.trim()); input = "" } },
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp).size(40.dp),
-                    enabled = vm.busy || input.isNotBlank()
-                ) {
-                    if (vm.busy) Icon(Icons.Rounded.Stop, "Berhenti") else Icon(Icons.Rounded.ArrowUpward, "Kirim")
                 }
             }
+        }
+    }
+    if (sheet) AddSheet(vm, onDismiss = { sheet = false },
+        onCamera = {
+            runCatching {
+                val f = File(File(ctx.cacheDir, "camera").apply { mkdirs() }, "cam_${System.currentTimeMillis()}.jpg")
+                val u = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", f); camUri = u; takePhoto.launch(u)
+            }
+        },
+        onPhoto = { pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+        onFile = { pickFile.launch(arrayOf("*/*")) })
+}
+
+@Composable
+private fun AttachmentChip(a: Attachment, onRemove: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Box(Modifier.padding(top = 8.dp, end = 8.dp)) {
+        if (a.thumb != null) Image(a.thumb.asImageBitmap(), a.name, Modifier.size(64.dp).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Crop)
+        else Surface(color = cs.surfaceContainerHighest, shape = RoundedCornerShape(14.dp), modifier = Modifier.height(64.dp)) {
+            Row(Modifier.padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Rounded.Description, null, Modifier.size(22.dp))
+                Text(a.name, Modifier.widthIn(max = 140.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        Surface(onClick = onRemove, shape = CircleShape, color = cs.onSurface, contentColor = cs.surface,
+            modifier = Modifier.align(Alignment.TopEnd).offset(8.dp, (-8).dp).size(22.dp)) {
+            Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Close, "Hapus", Modifier.size(14.dp)) }
+        }
+    }
+}
+
+// ───────────── Sheet "Tambahkan ke chat" ─────────────
+@Composable
+private fun AddSheet(vm: MainVM, onDismiss: () -> Unit, onCamera: () -> Unit, onPhoto: () -> Unit, onFile: () -> Unit) {
+    val ctx = LocalContext.current
+    val goTab = LocalGoTab.current
+    val cs = MaterialTheme.colorScheme
+    val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    fun close(after: () -> Unit = {}) { scope.launch { state.hide() }.invokeOnCompletion { onDismiss(); after() } }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state, containerColor = cs.surface) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(Modifier.fillMaxWidth().height(48.dp)) {
+                IconButton({ close() }, Modifier.align(Alignment.CenterStart)) { Icon(Icons.Rounded.Close, "Tutup") }
+                Text("Tambahkan ke chat", Modifier.align(Alignment.Center), style = MaterialTheme.typography.titleMedium)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                AddTile("Kamera", Icons.Rounded.PhotoCamera, Modifier.weight(1f)) { close(onCamera) }
+                AddTile("Foto", Icons.Rounded.Image, Modifier.weight(1f)) { close(onPhoto) }
+                AddTile("File", Icons.Rounded.AttachFile, Modifier.weight(1f)) { close(onFile) }
+            }
+            AddRow("Workspace", vm.workspaces.getOrNull(vm.active)?.let { it.name + " · " + it.path }, Icons.Rounded.Folder,
+                onClick = { close { goTab(1) } }) { Icon(Icons.Rounded.ChevronRight, null, tint = cs.onSurfaceVariant) }
+            AddRow("Konfirmasi perintah", "Tanya dulu sebelum shell / tulis file", Icons.Rounded.VerifiedUser,
+                onClick = { vm.confirm = !vm.confirm; vm.save() }) { Switch(vm.confirm, { vm.confirm = it; vm.save() }) }
+            AddRow("Ulangi pesan terakhir", null, Icons.Rounded.Refresh, enabled = !vm.busy && vm.msgs.any { it.role == "user" }, onClick = { close { vm.retry() } })
+            AddRow("Salin seluruh chat", null, Icons.Rounded.ContentCopy, enabled = vm.msgs.isNotEmpty(), onClick = { close { copyToClipboard(ctx, vm.transcript()) } })
+            AddRow("Bersihkan chat", null, Icons.Rounded.DeleteSweep, enabled = !vm.busy && vm.msgs.isNotEmpty(), danger = true, onClick = { close { vm.clearChat() } })
+            Spacer(Modifier.height(8.dp).navigationBarsPadding())
+        }
+    }
+}
+
+@Composable
+private fun AddTile(label: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Surface(onClick, modifier, shape = RoundedCornerShape(24.dp), color = cs.surfaceContainerHigh) {
+        Column(Modifier.padding(vertical = 18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Surface(shape = CircleShape, color = cs.surfaceContainerHighest, modifier = Modifier.size(56.dp)) {
+                Box(contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(26.dp)) }
+            }
+            Text(label, style = MaterialTheme.typography.bodyLarge)
+        }
+    }
+}
+
+@Composable
+private fun AddRow(title: String, sub: String?, icon: ImageVector, enabled: Boolean = true, danger: Boolean = false, onClick: () -> Unit, trailing: @Composable () -> Unit = {}) {
+    val cs = MaterialTheme.colorScheme
+    val tint = if (danger) cs.error else cs.onSurface
+    Surface(onClick, Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.45f), enabled = enabled, shape = RoundedCornerShape(24.dp), color = cs.surfaceContainerHigh) {
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Surface(shape = CircleShape, color = cs.surfaceContainerHighest, modifier = Modifier.size(44.dp)) {
+                Box(contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(22.dp), tint = tint) }
+            }
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge, color = tint)
+                if (sub != null) Text(sub, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            trailing()
         }
     }
 }
@@ -226,15 +337,16 @@ fun Bubble(m: Msg, idx: Int, isLast: Boolean, busy: Boolean, onEdit: (Int) -> Un
     val cs = MaterialTheme.colorScheme
     val isUser = m.role == "user"
     val (bg, fg) = when (m.role) {
-        "user" -> cs.primaryContainer to cs.onPrimaryContainer
-        "tool" -> cs.surfaceContainerHigh to cs.onSurfaceVariant
+        "user" -> cs.surfaceContainerHigh to cs.onSurface          // bubble abu netral (gaya ChatGPT/Claude)
+        "tool" -> cs.surfaceContainerLow to cs.onSurfaceVariant
         "error" -> cs.errorContainer to cs.onErrorContainer
-        else -> cs.secondaryContainer to cs.onSecondaryContainer
+        else -> Color.Transparent to cs.onSurface                  // balasan AI tanpa bubble, langsung di latar
     }
     var open by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
         Surface(
             color = bg, contentColor = fg, shape = RoundedCornerShape(if (m.role == "tool") 14.dp else 20.dp),
+            border = if (m.role == "tool") BorderStroke(1.dp, cs.outlineVariant.copy(alpha = 0.6f)) else null,
             modifier = if (isUser) Modifier.widthIn(max = 320.dp) else Modifier.fillMaxWidth()
         ) {
             when (m.role) {
@@ -249,8 +361,14 @@ fun Bubble(m: Msg, idx: Int, isLast: Boolean, busy: Boolean, onEdit: (Int) -> Un
                         Text(m.extra, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
                     }
                 }
-                "user", "error" -> SelectionContainer { Text(m.text, Modifier.padding(12.dp)) }
-                else -> SelectionContainer { Markdown(m.text, Modifier.padding(12.dp)) }
+                "user" -> SelectionContainer {
+                    Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (m.text.isNotBlank()) Text(m.text)
+                        if (m.extra.isNotBlank()) Text(m.extra, style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                    }
+                }
+                "error" -> SelectionContainer { Text(m.text, Modifier.padding(12.dp)) }
+                else -> SelectionContainer { Markdown(m.text, Modifier.padding(horizontal = 4.dp, vertical = 2.dp)) }
             }
         }
         Row(Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
