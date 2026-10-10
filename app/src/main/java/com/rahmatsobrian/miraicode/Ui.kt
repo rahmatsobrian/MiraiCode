@@ -61,6 +61,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import kotlin.math.roundToInt
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -291,6 +293,11 @@ fun ChatScreen(vm: MainVM) {
     val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok -> if (ok) camUri?.let(vm::addImage) }
     LaunchedEffect(vm.msgs.size, vm.busy) {
         if (vm.msgs.isNotEmpty()) ls.animateScrollToItem(if (vm.busy) vm.msgs.size else vm.msgs.lastIndex)
+    }
+    // Streaming: ikuti teks yang bertambah, tapi hanya bila pengguna memang sedang di dasar daftar
+    val streamLen = vm.msgs.lastOrNull()?.takeIf { it.role == "assistant" }?.text?.length ?: 0
+    LaunchedEffect(streamLen) {
+        if (vm.busy && streamLen > 0 && (ls.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= vm.msgs.size - 1) ls.scrollToItem(vm.msgs.size)
     }
     Page(vm.chats.firstOrNull { it.id == vm.currentId }?.title ?: "MiraiCode", actions = {
         AssistChip(onClick = {}, label = { Text(vm.mode.name) }, leadingIcon = { Icon(Icons.Rounded.Security, null, Modifier.size(18.dp)) })
@@ -768,10 +775,39 @@ fun Section(title: String, content: @Composable ColumnScope.() -> Unit) =
 // ───────────── Connected list (shape morphing) ─────────────
 /** Grup item yang menyatu: sudut luar besar, sudut dalam kecil, morph jadi bulat penuh saat ditekan. */
 @Composable
-fun SettingGroup(title: String, vararg rows: @Composable (Int, Int) -> Unit) {
+fun SettingGroup(title: String, vararg rows: @Composable (Int, Int) -> Unit) = SettingGroup(title, rows.toList())
+
+@Composable
+fun SettingGroup(title: String, rows: List<@Composable (Int, Int) -> Unit>) {
     Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
         Text(title, Modifier.padding(start = 16.dp, bottom = 6.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
         rows.forEachIndexed { i, r -> r(i, rows.size) }
+    }
+}
+
+/** Baris slider: judul + nilai (atau "Default") + tombol reset, slider di bawahnya. */
+@Composable
+fun SliderRow(
+    i: Int, n: Int, title: String, icon: ImageVector, label: String, isSet: Boolean, value: Float,
+    range: ClosedFloatingPointRange<Float>, note: String? = null, onChange: (Float) -> Unit, onReset: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    SegmentedListItem(
+        onClick = {}, shapes = ListItemDefaults.segmentedShapes(i, n),
+        colors = ListItemDefaults.colors(containerColor = cs.surfaceContainerHigh)
+    ) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Icon(icon, null, tint = cs.primary)
+                Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium, color = cs.onSurface)
+                Text(label, style = MaterialTheme.typography.labelLarge, color = if (isSet) cs.primary else cs.onSurfaceVariant)
+                Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
+                    if (isSet) IconButton(onReset, Modifier.size(36.dp)) { Icon(Icons.Rounded.RestartAlt, "Kembalikan ke default", Modifier.size(20.dp), tint = cs.onSurfaceVariant) }
+                }
+            }
+            Slider(value, onChange, valueRange = range)
+            if (note != null) Text(note, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+        }
     }
 }
 
@@ -869,11 +905,96 @@ fun SettingsScreen(vm: MainVM) {
     LaunchedEffect(Unit) { if (vm.mode == Mode.ROOT && vm.rootOk == null) vm.checkRoot() }
     Page("Setelan") {
         Column(Modifier.imePadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Section("Provider AI (OpenAI-compatible)") {
-                OutlinedTextField(vm.baseUrl, { vm.baseUrl = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("Endpoint (base URL)") }, singleLine = true)
-                OutlinedTextField(vm.apiKey, { vm.apiKey = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("API key") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
-                OutlinedTextField(vm.model, { vm.model = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("Model") }, singleLine = true)
-                OutlinedTextField(vm.system, { vm.system = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("System prompt") }, minLines = 3)
+            val cs0 = MaterialTheme.colorScheme
+            var showKey by remember { mutableStateOf(false) }
+            var modelMenu by remember { mutableStateOf(false) }
+            val tokenSteps = remember { listOf(256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536) }
+            val anth = vm.kind == 1
+            SettingGroup("Provider AI", buildList<@Composable (Int, Int) -> Unit> {
+                add { i, n -> DropdownRow(i, n, "Provider", "Layanan AI yang dipakai untuk chat.", Icons.Rounded.Cloud,
+                    Provider.entries.map { it.label }, vm.provider.ordinal, Provider.entries.map { it.sub }) { vm.pickProvider(Provider.entries[it]) } }
+                if (vm.provider == Provider.CUSTOM) add { i, n -> DropdownRow(i, n, "Format API", "Format request yang dipakai endpoint custom.", Icons.Rounded.Code,
+                    listOf("OpenAI-compatible", "Anthropic (Messages)"), if (vm.customAnthropic) 1 else 0) { vm.customAnthropic = it == 1; vm.save() } }
+            })
+            Section("Kredensial · ${vm.provider.label}") {
+                OutlinedTextField(vm.baseUrl, { vm.baseUrl = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("Endpoint (base URL)") }, singleLine = true,
+                    shape = RoundedCornerShape(20.dp),
+                    supportingText = { Text(if (anth) "Dipanggil: …/messages" else "Dipanggil: …/chat/completions") })
+                OutlinedTextField(vm.apiKey, { vm.apiKey = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("API key") }, singleLine = true,
+                    shape = RoundedCornerShape(20.dp),
+                    visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = { IconButton({ showKey = !showKey }) { Icon(if (showKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility, "Tampilkan/sembunyikan") } })
+                Box {
+                    OutlinedTextField(vm.model, { vm.model = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("Model") }, singleLine = true,
+                        shape = RoundedCornerShape(20.dp),
+                        trailingIcon = {
+                            if (vm.modelsLoading) LoadingIndicator(Modifier.size(32.dp))
+                            else IconButton({ if (vm.models.isEmpty()) vm.fetchModels() else modelMenu = true }) { Icon(Icons.Rounded.ArrowDropDown, "Pilih model") }
+                        })
+                    DropdownMenu(modelMenu, { modelMenu = false }, Modifier.heightIn(max = 320.dp), shape = RoundedCornerShape(24.dp),
+                        containerColor = cs0.surfaceContainerHighest) {
+                        vm.models.forEach { m ->
+                            val picked = m == vm.model
+                            DropdownMenuItem(text = { Text(m, color = if (picked) cs0.primary else cs0.onSurface) },
+                                onClick = { vm.model = m; vm.save(); modelMenu = false },
+                                trailingIcon = if (picked) ({ Icon(Icons.Rounded.Check, null, tint = cs0.primary) }) else null)
+                        }
+                    }
+                }
+                FilledTonalButton({ vm.fetchModels(); modelMenu = false }, enabled = !vm.modelsLoading, modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)) {
+                    Icon(Icons.Rounded.Sync, null, Modifier.padding(end = 8.dp).size(18.dp)); Text("Tes koneksi & muat daftar model")
+                }
+                vm.modelsMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = if (it.startsWith("Gagal")) cs0.error else cs0.primary) }
+                if (vm.models.isNotEmpty()) TextButton({ modelMenu = true }) { Text("Pilih dari ${vm.models.size} model") }
+                when (vm.provider) {
+                    Provider.CLAUDE -> "Header x-api-key & anthropic-version dikirim otomatis. Tool use didukung."
+                    Provider.OLLAMA -> "API key boleh kosong. Ganti localhost dengan IP server bila Ollama tidak berjalan di perangkat ini."
+                    Provider.OPENROUTER -> "Nama model berformat vendor/model, mis. anthropic/claude-sonnet-4.5."
+                    Provider.CUSTOM -> "Isi endpoint yang kompatibel. API key dikirim sebagai " + if (anth) "x-api-key." else "Bearer token."
+                    else -> null
+                }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = cs0.onSurfaceVariant) }
+            }
+            SettingGroup("Respons", buildList<@Composable (Int, Int) -> Unit> {
+                add { i, n -> SwitchSettingRow(i, n, "Streaming", "Tampilkan jawaban AI sambil diketik, tidak menunggu selesai.", Icons.Rounded.Bolt, vm.streaming) { vm.streaming = it; vm.save() } }
+                if (!anth) add { i, n -> DropdownRow(i, n, "Reasoning effort", "Untuk model penalaran (o-series, GPT-5, dll). Mati = tidak dikirim.", Icons.Rounded.Psychology,
+                    listOf("Mati", "Rendah", "Sedang", "Tinggi"), vm.reasoning) { vm.reasoning = it; vm.save() } }
+            })
+            SettingGroup("Parameter model", buildList<@Composable (Int, Int) -> Unit> {
+                add { i, n -> SliderRow(i, n, "Temperature", Icons.Rounded.Thermostat, if (vm.temperature.isNaN()) "Default" else "%.2f".format(vm.temperature),
+                    !vm.temperature.isNaN(), if (vm.temperature.isNaN()) 1f else vm.temperature, 0f..(if (anth) 1f else 2f),
+                    note = "Rendah = konsisten & fokus, tinggi = kreatif." + if (anth) " Claude maksimal 1.0." else "",
+                    onChange = { vm.temperature = (it * 20).roundToInt() / 20f; vm.save() }, onReset = { vm.temperature = Float.NaN; vm.save() }) }
+                add { i, n -> SliderRow(i, n, "Top P", Icons.Rounded.FilterAlt, if (vm.topP.isNaN()) "Default" else "%.2f".format(vm.topP),
+                    !vm.topP.isNaN(), if (vm.topP.isNaN()) 1f else vm.topP, 0f..1f,
+                    note = if (anth) "Claude: sebaiknya jangan diatur bersamaan dengan Temperature." else "Batasi pilihan token ke massa probabilitas teratas.",
+                    onChange = { vm.topP = (it * 20).roundToInt() / 20f; vm.save() }, onReset = { vm.topP = Float.NaN; vm.save() }) }
+                add { i, n -> SliderRow(i, n, "Maks token output", Icons.Rounded.Notes, if (vm.maxTokens == 0) "Default" else "${vm.maxTokens}",
+                    vm.maxTokens != 0, (tokenSteps.indexOfFirst { it >= vm.maxTokens }.takeIf { it >= 0 && vm.maxTokens != 0 } ?: 4).toFloat(), 0f..(tokenSteps.lastIndex).toFloat(),
+                    note = if (anth) "Claude wajib punya batas; kosong = 4096." else null,
+                    onChange = { vm.maxTokens = tokenSteps[it.roundToInt().coerceIn(0, tokenSteps.lastIndex)]; vm.save() }, onReset = { vm.maxTokens = 0; vm.save() }) }
+                if (!anth) {
+                    add { i, n -> SliderRow(i, n, "Frequency penalty", Icons.Rounded.Repeat, if (vm.freqPen.isNaN()) "Default" else "%.1f".format(vm.freqPen),
+                        !vm.freqPen.isNaN(), if (vm.freqPen.isNaN()) 0f else vm.freqPen, -2f..2f, note = "Positif = kurangi pengulangan kata.",
+                        onChange = { vm.freqPen = (it * 10).roundToInt() / 10f; vm.save() }, onReset = { vm.freqPen = Float.NaN; vm.save() }) }
+                    add { i, n -> SliderRow(i, n, "Presence penalty", Icons.Rounded.AutoAwesome, if (vm.presPen.isNaN()) "Default" else "%.1f".format(vm.presPen),
+                        !vm.presPen.isNaN(), if (vm.presPen.isNaN()) 0f else vm.presPen, -2f..2f, note = "Positif = dorong topik baru.",
+                        onChange = { vm.presPen = (it * 10).roundToInt() / 10f; vm.save() }, onReset = { vm.presPen = Float.NaN; vm.save() }) }
+                }
+            })
+            SettingGroup("Agen & jaringan",
+                { i, n -> SliderRow(i, n, "Langkah tool maksimum", Icons.Rounded.Layers, "${vm.maxSteps}", vm.maxSteps != 8, vm.maxSteps.toFloat(), 1f..25f,
+                    note = "Batas putaran AI memanggil tool dalam satu pesan.",
+                    onChange = { vm.maxSteps = it.roundToInt().coerceIn(1, 25); vm.save() }, onReset = { vm.maxSteps = 8; vm.save() }) },
+                { i, n -> SliderRow(i, n, "Timeout", Icons.Rounded.Timer, "${vm.timeoutSec} dtk", vm.timeoutSec != 180, vm.timeoutSec.toFloat(), 30f..600f,
+                    note = "Batas menunggu data dari server.",
+                    onChange = { vm.timeoutSec = ((it / 15).roundToInt() * 15).coerceIn(30, 600); vm.save() }, onReset = { vm.timeoutSec = 180; vm.save() }) },
+                { i, n -> SliderRow(i, n, "Coba ulang otomatis", Icons.Rounded.Replay, "${vm.retries}x", vm.retries != 3, vm.retries.toFloat(), 0f..6f,
+                    note = "Saat kena rate limit (429) atau error server sementara.",
+                    onChange = { vm.retries = it.roundToInt().coerceIn(0, 6); vm.save() }, onReset = { vm.retries = 3; vm.save() }) },
+                { i, n -> SettingRow(i, n, "Setel ulang semua parameter", "Kembalikan parameter model & agen ke default.", Icons.Rounded.RestartAlt, { vm.resetParams() }) }
+            )
+            Section("Instruksi sistem") {
+                OutlinedTextField(vm.system, { vm.system = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("System prompt") }, minLines = 3, shape = RoundedCornerShape(20.dp))
             }
             SettingGroup("Akses",
                 { i, n -> DropdownRow(i, n, "Mode akses",

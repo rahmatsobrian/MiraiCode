@@ -27,10 +27,55 @@ class Pending(val title: String, val detail: String, val result: CompletableDefe
 
 class MainVM(app: Application) : AndroidViewModel(app) {
     private val sp = app.getSharedPreferences("mirai", 0)
-    var baseUrl by mutableStateOf(sp.getString("baseUrl", "https://api.openai.com/v1")!!)
-    var apiKey by mutableStateOf(sp.getString("apiKey", "")!!)
-    var model by mutableStateOf(sp.getString("model", "gpt-4o-mini")!!)
+    // ───── Provider & parameter AI ─────
+    var provider by mutableStateOf(runCatching { Provider.valueOf(sp.getString("provider", "OPENAI")!!) }.getOrDefault(Provider.OPENAI))
+    var customAnthropic by mutableStateOf(sp.getBoolean("customAnthropic", false))   // format API untuk provider Custom
+    var baseUrl by mutableStateOf("")
+    var apiKey by mutableStateOf("")
+    var model by mutableStateOf("")
     var system by mutableStateOf(sp.getString("system", "Kamu MiraiCode, asisten coding agentik di Android. Gunakan tool untuk membaca/menulis file dan menjalankan shell di workspace. Jelaskan singkat apa yang kamu lakukan.")!!)
+    // NaN / 0 = "default provider" (parameter tidak dikirim)
+    var temperature by mutableFloatStateOf(sp.getFloat("temperature", Float.NaN))
+    var topP by mutableFloatStateOf(sp.getFloat("topP", Float.NaN))
+    var maxTokens by mutableIntStateOf(sp.getInt("maxTokens", 0))
+    var freqPen by mutableFloatStateOf(sp.getFloat("freqPen", Float.NaN))
+    var presPen by mutableFloatStateOf(sp.getFloat("presPen", Float.NaN))
+    var reasoning by mutableIntStateOf(sp.getInt("reasoning", 0))      // 0 mati, 1 rendah, 2 sedang, 3 tinggi
+    var streaming by mutableStateOf(sp.getBoolean("streaming", true))
+    var maxSteps by mutableIntStateOf(sp.getInt("maxSteps", 8))        // batas putaran tool per pesan
+    var timeoutSec by mutableIntStateOf(sp.getInt("timeoutSec", 180))
+    var retries by mutableIntStateOf(sp.getInt("retries", 3))
+    val kind get() = if (provider == Provider.CUSTOM) (if (customAnthropic) 1 else 0) else provider.kind
+    val models = mutableStateListOf<String>()
+    var modelsLoading by mutableStateOf(false)
+    var modelsMsg by mutableStateOf<String?>(null)
+
+    private fun loadProvider() {
+        val p = provider.name
+        val legacy = provider == Provider.OPENAI   // migrasi dari versi lama (1 provider)
+        baseUrl = sp.getString("${p}_url", if (legacy) sp.getString("baseUrl", provider.url) else provider.url)!!
+        apiKey = sp.getString("${p}_key", if (legacy) sp.getString("apiKey", "") else "")!!
+        model = sp.getString("${p}_model", if (legacy) sp.getString("model", provider.model) else provider.model)!!
+        models.clear(); modelsMsg = null
+    }
+    init { loadProvider() }
+    fun pickProvider(p: Provider) { save(); provider = p; loadProvider(); save() }
+    fun llmCfg() = LlmCfg(kind, baseUrl.trim(), apiKey.trim(), model.trim(), temperature, topP, maxTokens, freqPen, presPen,
+        reasoning, streaming, timeoutSec, retries)
+    fun fetchModels() {
+        if (modelsLoading) return
+        modelsLoading = true; modelsMsg = null
+        viewModelScope.launch {
+            runCatching { runInterruptible(Dispatchers.IO) { Llm.models(llmCfg().let { LlmCfg(it.kind, it.baseUrl, it.key, it.model, Float.NaN, Float.NaN, 0, Float.NaN, Float.NaN, 0, false, 30, 0) }) } }
+                .onSuccess { models.clear(); models.addAll(it); modelsMsg = if (it.isEmpty()) "Terhubung, tapi daftar model kosong." else "Terhubung · ${it.size} model ditemukan." }
+                .onFailure { models.clear(); modelsMsg = "Gagal: " + (it.message ?: it.toString()).take(200) }
+            modelsLoading = false
+        }
+    }
+    fun resetParams() {
+        temperature = Float.NaN; topP = Float.NaN; maxTokens = 0; freqPen = Float.NaN; presPen = Float.NaN
+        reasoning = 0; streaming = true; maxSteps = 8; timeoutSec = 180; retries = 3; save()
+    }
     var theme by mutableIntStateOf(sp.getInt("theme", 0))        // 0 sistem,1 terang,2 gelap,3 amoled
     var dynamic by mutableStateOf(sp.getBoolean("dynamic", true))
     var confirm by mutableStateOf(sp.getBoolean("confirm", true))
@@ -49,6 +94,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
     private val crashFile = java.io.File(app.filesDir, "crash.txt")
     fun dismissCrash() { crash = null; crashFile.delete() }
     private var job: Job? = null
+    private val mainH = android.os.Handler(android.os.Looper.getMainLooper())
     val attachments = mutableStateListOf<Attachment>()
 
     private fun toast(t: String) = android.widget.Toast.makeText(getApplication(), t, android.widget.Toast.LENGTH_SHORT).show()
@@ -212,7 +258,12 @@ class MainVM(app: Application) : AndroidViewModel(app) {
     }
 
     fun save() = sp.edit {
-        putString("baseUrl", baseUrl); putString("apiKey", apiKey); putString("model", model); putString("system", system)
+        putString("provider", provider.name); putBoolean("customAnthropic", customAnthropic)
+        putString("${provider.name}_url", baseUrl); putString("${provider.name}_key", apiKey); putString("${provider.name}_model", model)
+        putString("system", system)
+        putFloat("temperature", temperature); putFloat("topP", topP); putInt("maxTokens", maxTokens)
+        putFloat("freqPen", freqPen); putFloat("presPen", presPen); putInt("reasoning", reasoning)
+        putBoolean("streaming", streaming); putInt("maxSteps", maxSteps); putInt("timeoutSec", timeoutSec); putInt("retries", retries)
         putInt("theme", theme); putBoolean("dynamic", dynamic); putBoolean("confirm", confirm)
         putString("mode", mode.name); putInt("active", active)
         putString("ws", JSONArray(workspaces.map { JSONObject().put("n", it.name).put("p", it.path) }).toString())
@@ -259,12 +310,24 @@ class MainVM(app: Application) : AndroidViewModel(app) {
             saveChat()   // percakapan langsung muncul di riwayat
             val base = hist.length(); var done = false
             try {
-                for (step in 0 until 8) {
-                    val all = JSONArray().put(JSONObject().put("role", "system").put("content", system))
-                    for (i in 0 until hist.length()) all.put(hist.get(i))
-                    val m = runInterruptible(Dispatchers.IO) { Llm.chat(baseUrl, apiKey, model, all, Tools.schema) }
+                for (step in 0 until maxSteps) {
+                    val cfg = llmCfg()
+                    // Streaming: bubble AI dibuat dulu lalu diisi bertahap
+                    val live = if (cfg.stream) { msgs.add(Msg("assistant", "")); msgs.lastIndex } else -1
+                    val alive = java.util.concurrent.atomic.AtomicBoolean(true)
+                    val onText: (String) -> Unit = { t ->
+                        if (live >= 0) mainH.post { if (alive.get()) msgs.getOrNull(live)?.takeIf { it.role == "assistant" }?.let { msgs[live] = it.copy(text = t) } }
+                    }
+                    val m = try {
+                        runInterruptible(Dispatchers.IO) { Llm.chat(cfg, system, hist, Tools.schema, onText) }
+                    } catch (e: Throwable) {
+                        if (live >= 0 && msgs.getOrNull(live)?.text.isNullOrBlank()) msgs.removeAt(live)
+                        throw e
+                    } finally { alive.set(false) }
                     hist.put(m)
-                    if (!m.isNull("content") && m.getString("content").isNotBlank()) msgs.add(Msg("assistant", m.getString("content")))
+                    val content = if (m.isNull("content")) "" else m.getString("content")
+                    if (live >= 0) { if (content.isNotBlank()) msgs[live] = Msg("assistant", content) else msgs.removeAt(live) }
+                    else if (content.isNotBlank()) msgs.add(Msg("assistant", content))
                     val calls = m.optJSONArray("tool_calls")
                     if (calls == null || calls.length() == 0) break
                     for (i in 0 until calls.length()) {
