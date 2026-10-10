@@ -2,6 +2,8 @@ package com.rahmatsobrian.miraicode
 
 import android.app.Application
 import android.net.Uri
+import kotlin.math.roundToInt
+import android.content.SharedPreferences
 import androidx.compose.runtime.*
 import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
@@ -27,6 +29,28 @@ data class Msg(val role: String, val text: String, val extra: String = "")
 data class ChatMeta(val id: String, val title: String, val updated: Long, val text: String)
 class Pending(val title: String, val detail: String, val result: CompletableDeferred<Boolean> = CompletableDeferred())
 
+/** Satu parameter dengan 3 mode: 0 = default (provider/app), 1 = slider, 2 = nilai custom yang diketik. */
+class Knob(private val sp: SharedPreferences, val key: String, val def: Float, legacy: String? = null) {
+    var mode by mutableIntStateOf(0)
+    var value by mutableFloatStateOf(Float.NaN)   // nilai untuk mode slider
+    var text by mutableStateOf("")                // isi kolom untuk mode custom
+    init {
+        val raw = ((sp.all[key] ?: legacy?.let { sp.all[it] }) as? Number)?.toFloat()
+            ?.takeIf { !it.isNaN() && !(key == "k_tokens" && it == 0f) }
+        value = raw ?: Float.NaN
+        mode = if (sp.contains("${key}_mode")) sp.getInt("${key}_mode", 0) else if (raw != null && raw != def) 1 else 0
+        text = sp.getString("${key}_text", "") ?: ""
+    }
+    /** Nilai yang benar-benar dipakai; NaN = tidak dikirim ke provider. */
+    val eff: Float get() = when (mode) {
+        1 -> if (value.isNaN()) def else value
+        2 -> text.trim().replace(',', '.').toFloatOrNull()?.takeIf { it.isFinite() } ?: def
+        else -> def
+    }
+    val effInt: Int? get() = eff.takeIf { !it.isNaN() }?.roundToInt()
+    fun save(e: SharedPreferences.Editor) { e.putFloat(key, value); e.putInt("${key}_mode", mode); e.putString("${key}_text", text) }
+}
+
 class MainVM(app: Application) : AndroidViewModel(app) {
     private val sp = app.getSharedPreferences("mirai", 0)
     // ───── Provider & parameter AI ─────
@@ -37,16 +61,18 @@ class MainVM(app: Application) : AndroidViewModel(app) {
     var model by mutableStateOf("")
     var system by mutableStateOf(sp.getString("system", "Kamu MiraiCode, asisten coding agentik di Android. Gunakan tool untuk membaca/menulis file dan menjalankan shell di workspace. Jelaskan singkat apa yang kamu lakukan.")!!)
     // NaN / 0 = "default provider" (parameter tidak dikirim)
-    var temperature by mutableFloatStateOf(sp.getFloat("temperature", Float.NaN))
-    var topP by mutableFloatStateOf(sp.getFloat("topP", Float.NaN))
-    var maxTokens by mutableIntStateOf(sp.getInt("maxTokens", 0))
-    var freqPen by mutableFloatStateOf(sp.getFloat("freqPen", Float.NaN))
-    var presPen by mutableFloatStateOf(sp.getFloat("presPen", Float.NaN))
     var reasoning by mutableIntStateOf(sp.getInt("reasoning", 0))      // 0 mati, 1 rendah, 2 sedang, 3 tinggi
     var streaming by mutableStateOf(sp.getBoolean("streaming", true))
-    var maxSteps by mutableIntStateOf(sp.getInt("maxSteps", 8))        // batas putaran tool per pesan
-    var timeoutSec by mutableIntStateOf(sp.getInt("timeoutSec", 180))
-    var retries by mutableIntStateOf(sp.getInt("retries", 3))
+    val kTemp = Knob(sp, "temperature", Float.NaN)
+    val kTopP = Knob(sp, "topP", Float.NaN)
+    val kTokens = Knob(sp, "k_tokens", Float.NaN, "maxTokens")
+    val kFreq = Knob(sp, "freqPen", Float.NaN)
+    val kPres = Knob(sp, "presPen", Float.NaN)
+    val kSteps = Knob(sp, "k_steps", 8f, "maxSteps")          // batas putaran tool per pesan
+    val kTimeout = Knob(sp, "k_timeout", 180f, "timeoutSec")
+    val kRetries = Knob(sp, "k_retries", 3f, "retries")
+    private val knobs = listOf(kTemp, kTopP, kTokens, kFreq, kPres, kSteps, kTimeout, kRetries)
+    val maxSteps get() = (kSteps.effInt ?: 8).coerceIn(1, 50)
     val kind get() = if (provider == Provider.CUSTOM) (if (customAnthropic) 1 else 0) else provider.kind
     val models = mutableStateListOf<String>()
     var modelsLoading by mutableStateOf(false)
@@ -62,8 +88,8 @@ class MainVM(app: Application) : AndroidViewModel(app) {
     }
     init { loadProvider() }
     fun pickProvider(p: Provider) { save(); provider = p; loadProvider(); save() }
-    fun llmCfg() = LlmCfg(kind, baseUrl.trim(), apiKey.trim(), model.trim(), temperature, topP, maxTokens, freqPen, presPen,
-        reasoning, streaming, timeoutSec, retries)
+    fun llmCfg() = LlmCfg(kind, baseUrl.trim(), apiKey.trim(), model.trim(), kTemp.eff, kTopP.eff, (kTokens.effInt ?: 0).coerceAtLeast(0), kFreq.eff, kPres.eff,
+        reasoning, streaming, (kTimeout.effInt ?: 180).coerceIn(5, 3600), (kRetries.effInt ?: 3).coerceIn(0, 10))
     fun fetchModels() {
         if (modelsLoading) return
         modelsLoading = true; modelsMsg = null
@@ -74,10 +100,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
             modelsLoading = false
         }
     }
-    fun resetParams() {
-        temperature = Float.NaN; topP = Float.NaN; maxTokens = 0; freqPen = Float.NaN; presPen = Float.NaN
-        reasoning = 0; streaming = true; maxSteps = 8; timeoutSec = 180; retries = 3; save()
-    }
+    fun resetParams() { knobs.forEach { it.mode = 0 }; reasoning = 0; streaming = true; save() }
     var theme by mutableIntStateOf(sp.getInt("theme", 0))        // 0 sistem,1 terang,2 gelap,3 amoled
     var dynamic by mutableStateOf(sp.getBoolean("dynamic", true))
     var confirm by mutableStateOf(sp.getBoolean("confirm", true))
@@ -263,9 +286,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
         putString("provider", provider.name); putBoolean("customAnthropic", customAnthropic)
         putString("${provider.name}_url", baseUrl); putString("${provider.name}_key", apiKey); putString("${provider.name}_model", model)
         putString("system", system)
-        putFloat("temperature", temperature); putFloat("topP", topP); putInt("maxTokens", maxTokens)
-        putFloat("freqPen", freqPen); putFloat("presPen", presPen); putInt("reasoning", reasoning)
-        putBoolean("streaming", streaming); putInt("maxSteps", maxSteps); putInt("timeoutSec", timeoutSec); putInt("retries", retries)
+        knobs.forEach { it.save(this) }; putInt("reasoning", reasoning); putBoolean("streaming", streaming)
         putInt("theme", theme); putBoolean("dynamic", dynamic); putBoolean("confirm", confirm)
         putString("mode", mode.name); putInt("active", active)
         putString("ws", JSONArray(workspaces.map { JSONObject().put("n", it.name).put("p", it.path) }).toString())
@@ -326,11 +347,11 @@ class MainVM(app: Application) : AndroidViewModel(app) {
                             val t = tgt.get()
                             if (shown < t.length) {
                                 val back = t.length - shown
-                                shown += (back / 4).coerceAtLeast(2).coerceAtMost(back)
+                                shown += (back / 10).coerceAtLeast(1).coerceAtMost(back)
                                 if (shown < t.length && Character.isHighSurrogate(t[shown - 1])) shown++
                                 msgs.getOrNull(live)?.takeIf { it.role == "assistant" }?.let { msgs[live] = it.copy(text = t.substring(0, shown.coerceAtMost(t.length))) }
                             } else if (fin.get()) break
-                            delay(32)
+                            delay(16)
                         }
                     } else null
                     val m = try {

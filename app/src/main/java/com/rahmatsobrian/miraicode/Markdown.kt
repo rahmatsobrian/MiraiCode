@@ -5,6 +5,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
 import android.widget.Toast
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -210,38 +212,53 @@ private fun rememberInline(t: String, st: InlineStyle): AnnotatedString =
     remember(t, st.codeBg, st.link) { buildAnnotatedString { inline(t, st) } }
 
 // ───────────── Composable ─────────────
-@Composable
-fun Markdown(text: String, modifier: Modifier = Modifier) {
-    val blocks = remember(text) { parseMarkdown(text) }
-    val fg = LocalContentColor.current
-    val st = remember(fg) { InlineStyle(codeBg = fg.copy(alpha = 0.14f), link = fg) }
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        blocks.forEach { MdBlock(it, st) }
+/** Huruf paling baru dibuat transparan lalu makin pekat ke belakang -> efek fade-in saat teks mengalir. */
+private fun AnnotatedString.fadeTail(color: Color, fade: Float, n: Int = 28): AnnotatedString {
+    if (fade <= 0.01f || text.isEmpty()) return this
+    val len = text.length; val from = (len - n).coerceAtLeast(0); val span = (len - from).coerceAtLeast(1)
+    return buildAnnotatedString {
+        append(this@fadeTail)
+        for (i in from until len) {
+            val t = (i - from + 1).toFloat() / span
+            addStyle(SpanStyle(color = color.copy(alpha = 1f - 0.92f * fade * t)), i, i + 1)
+        }
     }
 }
 
 @Composable
-private fun MdBlock(b: Md, st: InlineStyle) {
+fun Markdown(text: String, modifier: Modifier = Modifier, streaming: Boolean = false) {
+    val blocks = remember(text) { parseMarkdown(text) }
+    val fg = LocalContentColor.current
+    val st = remember(fg) { InlineStyle(codeBg = fg.copy(alpha = 0.14f), link = fg) }
+    // Saat streaming selesai, fade dilepas perlahan (tidak "pop")
+    val fade by animateFloatAsState(if (streaming) 1f else 0f, tween(450), label = "tailFade")
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        blocks.forEachIndexed { k, b -> MdBlock(b, st, if (k == blocks.lastIndex) fade else 0f, fg) }
+    }
+}
+
+@Composable
+private fun MdBlock(b: Md, st: InlineStyle, fade: Float = 0f, fg: Color = Color.Unspecified) {
     val line = LocalContentColor.current.copy(alpha = 0.25f)
     when (b) {
         is Md.Heading -> Text(
-            rememberInline(b.text, st), Modifier.padding(top = 4.dp), fontWeight = FontWeight.Bold,
+            rememberInline(b.text, st).fadeTail(fg, fade), Modifier.padding(top = 4.dp), fontWeight = FontWeight.Bold,
             style = when (b.level) { 1 -> MaterialTheme.typography.titleLarge; 2 -> MaterialTheme.typography.titleMedium; else -> MaterialTheme.typography.titleSmall }
         )
-        is Md.Para -> Text(rememberInline(b.text, st))
+        is Md.Para -> Text(rememberInline(b.text, st).fadeTail(fg, fade))
         is Md.Code -> CodeBlock(b.lang, b.code)
         is Md.Items -> Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            b.items.forEach { it ->
+            b.items.forEachIndexed { k, it ->
                 Row(Modifier.padding(start = (it.indent * 16).dp)) {
                     Text(if (it.marker == "•" && it.indent > 0) "◦" else it.marker, Modifier.widthIn(min = 22.dp))
-                    Text(rememberInline(it.text, st), Modifier.weight(1f))
+                    Text(rememberInline(it.text, st).let { a -> if (k == b.items.lastIndex) a.fadeTail(fg, fade) else a }, Modifier.weight(1f))
                 }
             }
         }
         is Md.Quote -> Row(Modifier.height(IntrinsicSize.Min)) {
             Box(Modifier.width(3.dp).fillMaxHeight().background(line, RoundedCornerShape(2.dp)))
             Spacer(Modifier.width(10.dp))
-            Text(rememberInline(b.text, st), fontStyle = FontStyle.Italic)
+            Text(rememberInline(b.text, st).fadeTail(fg, fade), fontStyle = FontStyle.Italic)
         }
         Md.Rule -> Box(Modifier.fillMaxWidth().height(1.dp).background(line))
         is Md.Table -> {
