@@ -20,6 +20,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -104,23 +106,33 @@ fun Page(title: String, actions: @Composable RowScope.() -> Unit = {}, content: 
     Column(Modifier.fillMaxSize()) { TopAppBar(title = { Text(title) }, actions = actions); content() }
 
 // ───────────── Chat ─────────────
+private val InputH = 56.dp   // tinggi minimum OutlinedTextField; tombol kirim & dropdown disamakan
+
 @Composable
 fun ChatScreen(vm: MainVM) {
     val ls = rememberLazyListState()
+    val ctx = LocalContext.current
     var input by rememberSaveable { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
-    LaunchedEffect(vm.msgs.size, vm.busy) { if (vm.msgs.isNotEmpty()) ls.animateScrollToItem(vm.msgs.lastIndex) }
+    LaunchedEffect(vm.msgs.size, vm.busy) {
+        if (vm.msgs.isNotEmpty()) ls.animateScrollToItem(if (vm.busy) vm.msgs.size else vm.msgs.lastIndex)
+    }
     Page("MiraiCode", actions = {
         AssistChip(onClick = {}, label = { Text(vm.mode.name) }, leadingIcon = { Icon(Icons.Rounded.Security, null, Modifier.size(18.dp)) })
     }) {
-        AnimatedVisibility(vm.busy) { LinearWavyProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) }
         Box(Modifier.weight(1f)) {
-            if (vm.msgs.isEmpty()) Column(Modifier.align(Alignment.Center).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (vm.msgs.isEmpty()) Column(Modifier.align(Alignment.Center).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Workspace: ${vm.workspaces[vm.active].path}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                 Text("Minta AI membaca/menulis file atau menjalankan shell.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                listOf("Tampilkan isi workspace", "Buat file hello.html sederhana", "Jelaskan struktur proyek ini").forEach {
+                    SuggestionChip(onClick = { vm.send(it) }, label = { Text(it) })
+                }
             }
             LazyColumn(Modifier.fillMaxSize(), state = ls, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(vm.msgs) { Bubble(it) }
+                itemsIndexed(vm.msgs) { i, m ->
+                    Bubble(m, i, isLast = i == vm.msgs.lastIndex, busy = vm.busy,
+                        onEdit = { idx -> vm.rollback(idx)?.let { input = it } }, onRetry = { vm.retry() })
+                }
                 if (vm.busy) item {
                     val tn = vm.toolName
                     if (tn != null) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -130,21 +142,33 @@ fun ChatScreen(vm: MainVM) {
             }
         }
         Row(Modifier.fillMaxWidth().padding(12.dp).imePadding(), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(input, { input = it }, Modifier.weight(1f), placeholder = { Text("Pesan…") }, maxLines = 5, shape = RoundedCornerShape(24.dp))
-            Box {
-                SplitButtonLayout(leadingButton = {
-                    SplitButtonDefaults.LeadingButton({ if (input.isNotBlank()) { vm.send(input); input = "" } }) {
-                        Icon(Icons.AutoMirrored.Rounded.Send, "Kirim", Modifier.size(SplitButtonDefaults.LeadingIconSize))
-                    }
-                }, trailingButton = {
-                    SplitButtonDefaults.TrailingButton(checked = menu, onCheckedChange = { menu = it }) {
+            OutlinedTextField(input, { input = it }, Modifier.weight(1f).heightIn(min = InputH), placeholder = { Text("Pesan…") }, maxLines = 5, shape = RoundedCornerShape(28.dp))
+            // Tombol kirim + dropdown: tinggi sama persis dengan kolom input (56dp), menyatu seperti split button
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                Button(
+                    onClick = { if (vm.busy) vm.stop() else if (input.isNotBlank()) { vm.send(input.trim()); input = "" } },
+                    modifier = Modifier.size(width = 60.dp, height = InputH),
+                    enabled = vm.busy || input.isNotBlank(),
+                    shape = RoundedCornerShape(topStart = 28.dp, bottomStart = 28.dp, topEnd = 6.dp, bottomEnd = 6.dp),
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    if (vm.busy) Icon(Icons.Rounded.Stop, "Berhenti") else Icon(Icons.AutoMirrored.Rounded.Send, "Kirim")
+                }
+                Box {
+                    Button(
+                        onClick = { menu = !menu },
+                        modifier = Modifier.size(width = 48.dp, height = InputH),
+                        shape = RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp, topEnd = 28.dp, bottomEnd = 28.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
                         val r by animateFloatAsState(if (menu) 180f else 0f, label = "arrow")
-                        Icon(Icons.Rounded.KeyboardArrowDown, null, Modifier.size(SplitButtonDefaults.TrailingIconSize).graphicsLayer { rotationZ = r })
+                        Icon(Icons.Rounded.KeyboardArrowDown, "Menu", Modifier.graphicsLayer { rotationZ = r })
                     }
-                })
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("Ulangi pesan terakhir") }, leadingIcon = { Icon(Icons.Rounded.Refresh, null) }, onClick = { menu = false; vm.retry() })
-                    DropdownMenuItem(text = { Text("Bersihkan chat") }, leadingIcon = { Icon(Icons.Rounded.DeleteSweep, null) }, onClick = { menu = false; vm.clearChat() })
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text("Ulangi pesan terakhir") }, leadingIcon = { Icon(Icons.Rounded.Refresh, null) }, enabled = !vm.busy, onClick = { menu = false; vm.retry() })
+                        DropdownMenuItem(text = { Text("Salin seluruh chat") }, leadingIcon = { Icon(Icons.Rounded.ContentCopy, null) }, enabled = vm.msgs.isNotEmpty(), onClick = { menu = false; copyToClipboard(ctx, vm.transcript()) })
+                        DropdownMenuItem(text = { Text("Bersihkan chat") }, leadingIcon = { Icon(Icons.Rounded.DeleteSweep, null) }, enabled = !vm.busy, onClick = { menu = false; vm.clearChat() })
+                    }
                 }
             }
         }
@@ -152,18 +176,45 @@ fun ChatScreen(vm: MainVM) {
 }
 
 @Composable
-fun Bubble(m: Msg) {
+fun Bubble(m: Msg, idx: Int, isLast: Boolean, busy: Boolean, onEdit: (Int) -> Unit, onRetry: () -> Unit) {
+    val ctx = LocalContext.current
     val cs = MaterialTheme.colorScheme
+    val isUser = m.role == "user"
     val (bg, fg) = when (m.role) {
         "user" -> cs.primaryContainer to cs.onPrimaryContainer
         "tool" -> cs.surfaceContainerHigh to cs.onSurfaceVariant
         "error" -> cs.errorContainer to cs.onErrorContainer
         else -> cs.secondaryContainer to cs.onSecondaryContainer
     }
-    Box(Modifier.fillMaxWidth(), contentAlignment = if (m.role == "user") Alignment.CenterEnd else Alignment.CenterStart) {
-        Surface(color = bg, contentColor = fg, shape = RoundedCornerShape(20.dp), modifier = Modifier.widthIn(max = 340.dp)) {
-            if (m.role == "tool") Text("▶ ${m.text}", Modifier.padding(12.dp), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-            else Text(m.text, Modifier.padding(12.dp))
+    var open by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
+        Surface(
+            color = bg, contentColor = fg, shape = RoundedCornerShape(if (m.role == "tool") 14.dp else 20.dp),
+            modifier = if (isUser) Modifier.widthIn(max = 320.dp) else Modifier.fillMaxWidth()
+        ) {
+            when (m.role) {
+                "tool" -> Column(Modifier.clickable { open = !open }.padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("▶ ${m.text}", Modifier.weight(1f), fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+                            maxLines = if (open) Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis)
+                        if (m.extra.isNotBlank()) Icon(if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null, Modifier.size(18.dp))
+                    }
+                    if (open && m.extra.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(m.extra, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                    }
+                }
+                "user", "error" -> SelectionContainer { Text(m.text, Modifier.padding(12.dp)) }
+                else -> SelectionContainer { Markdown(m.text, Modifier.padding(12.dp)) }
+            }
+        }
+        Row(Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            val tint = cs.onSurfaceVariant
+            IconButton({ copyToClipboard(ctx, if (m.role == "tool" && m.extra.isNotBlank()) m.text + "\n\n" + m.extra else m.text) }, Modifier.size(32.dp)) {
+                Icon(Icons.Rounded.ContentCopy, "Salin", Modifier.size(16.dp), tint = tint)
+            }
+            if (isUser && !busy) IconButton({ onEdit(idx) }, Modifier.size(32.dp)) { Icon(Icons.Rounded.Edit, "Edit", Modifier.size(16.dp), tint = tint) }
+            if (m.role == "assistant" && isLast && !busy) IconButton(onRetry, Modifier.size(32.dp)) { Icon(Icons.Rounded.Refresh, "Ulangi", Modifier.size(16.dp), tint = tint) }
         }
     }
 }

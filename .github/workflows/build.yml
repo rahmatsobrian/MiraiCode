@@ -8,7 +8,21 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # perlu untuk membuat GitHub Release
+  contents: write   # membuat GitHub Release
+  actions: write    # menghapus cache lama yang sudah digantikan
+
+# Run lama untuk branch/PR yang sama dibatalkan (hemat menit & cache). Tag release tidak dibatalkan.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  GRADLE_VERSION: 9.3.1
+  ANDROID_SDK: /usr/local/lib/android/sdk
+  # Cache hanya DITULIS dari push branch. Run PR/tag membuat cache yang terkunci
+  # ke ref-nya sendiri dan tidak pernah dipakai run lain -> inilah yang bikin cache menumpuk.
+  # Run PR/tag tetap MEMBACA cache dari branch utama.
+  CAN_SAVE: ${{ github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   build:
@@ -21,13 +35,91 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      # Tidak butuh gradle wrapper di repo; Gradle dipasang langsung.
-      - uses: gradle/actions/setup-gradle@v4
+      # ── 1. Distribusi Gradle (dulu diunduh ulang tiap run) ──
+      - name: Restore Gradle distribution
+        id: gradle-dist
+        uses: actions/cache/restore@v4
         with:
-          gradle-version: 9.3.1
+          path: ~/gradle-dist
+          key: gradle-dist-${{ env.GRADLE_VERSION }}
+
+      - name: Pasang Gradle
+        run: |
+          if [ ! -x "$HOME/gradle-dist/gradle-$GRADLE_VERSION/bin/gradle" ]; then
+            mkdir -p "$HOME/gradle-dist"
+            curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/gradle.zip
+            unzip -q /tmp/gradle.zip -d "$HOME/gradle-dist"
+          fi
+          echo "$HOME/gradle-dist/gradle-$GRADLE_VERSION/bin" >> "$GITHUB_PATH"
+
+      - name: Save Gradle distribution
+        if: env.CAN_SAVE == 'true' && steps.gradle-dist.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/gradle-dist
+          key: gradle-dist-${{ env.GRADLE_VERSION }}
+
+      # ── 2. Dependency & cache Gradle ──
+      - name: Restore Gradle cache
+        id: gradle-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # ── 3. Komponen Android SDK (platform 37 tidak ada di runner -> diunduh AGP tiap run) ──
+      - name: Restore Android SDK components
+        id: sdk-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.ANDROID_SDK }}/platforms/android-37*
+            ${{ env.ANDROID_SDK }}/build-tools/37*
+          key: android-sdk-37-${{ hashFiles('build.gradle.kts') }}
+
+      - name: Siapkan izin folder SDK
+        run: sudo chmod a+rwx "$ANDROID_SDK/platforms" "$ANDROID_SDK/build-tools" || true
 
       - name: Build debug + release APK (signed dengan app/release-key.jks)
-        run: gradle :app:assembleDebug :app:assembleRelease --stacktrace
+        run: gradle :app:assembleDebug :app:assembleRelease --stacktrace --no-daemon --build-cache
+
+      # ── Simpan cache (juga saat build gagal, supaya run berikutnya tidak mulai dari nol) ──
+      - name: Bersihkan file kunci sebelum simpan cache
+        if: always() && env.CAN_SAVE == 'true'
+        run: |
+          gradle --stop || true
+          rm -f ~/.gradle/caches/modules-2/modules-2.lock ~/.gradle/caches/modules-2/gc.properties
+
+      - name: Save Gradle cache
+        if: always() && env.CAN_SAVE == 'true' && steps.gradle-cache.outputs.cache-hit != 'true'
+        id: gradle-save
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ steps.gradle-cache.outputs.cache-primary-key }}
+
+      - name: Hapus cache Gradle lama yang sudah digantikan
+        if: always() && steps.gradle-save.outcome == 'success' && steps.gradle-cache.outputs.cache-matched-key != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh cache delete "${{ steps.gradle-cache.outputs.cache-matched-key }}" || true
+
+      - name: Save Android SDK components
+        if: always() && env.CAN_SAVE == 'true' && steps.sdk-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.ANDROID_SDK }}/platforms/android-37*
+            ${{ env.ANDROID_SDK }}/build-tools/37*
+          key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
 
       - name: Ukuran APK
         run: ls -lh app/build/outputs/apk/debug/*.apk app/build/outputs/apk/release/*.apk

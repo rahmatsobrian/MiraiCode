@@ -8,6 +8,9 @@ import java.net.URL
 /** Klien untuk endpoint OpenAI-compatible: {baseUrl}/chat/completions */
 object Llm {
     private val RETRY = setOf(429, 500, 502, 503, 504)
+    @Volatile private var conn: HttpURLConnection? = null
+    /** Putuskan koneksi yang sedang berjalan (tombol Berhenti). */
+    fun abort() { runCatching { conn?.disconnect() } }
 
     fun chat(baseUrl: String, key: String, model: String, messages: JSONArray, tools: JSONArray): JSONObject {
         val body = JSONObject().put("model", model).put("messages", messages).put("tools", tools).toString().toByteArray()
@@ -15,6 +18,7 @@ object Llm {
         // Rate limit (429) / error server sementara: coba lagi otomatis dengan backoff
         for (attempt in 0 until 4) {
             val c = URL(baseUrl.trimEnd('/') + "/chat/completions").openConnection() as HttpURLConnection
+            conn = c
             c.requestMethod = "POST"; c.doOutput = true
             c.connectTimeout = 30000; c.readTimeout = 180000
             c.setRequestProperty("Content-Type", "application/json")
