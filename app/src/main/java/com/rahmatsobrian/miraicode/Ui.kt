@@ -43,6 +43,8 @@ import java.io.File
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.graphics.SolidColor
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -199,7 +201,12 @@ private fun ColumnScope.DrawerContent(vm: MainVM, tab: Int, onTab: (Int) -> Unit
     val hl = cs.primary.copy(alpha = 0.3f)
     val snapshot = vm.chats.toList()
     val rows: List<Any> = remember(q, snapshot, hl) {
-        if (q.isEmpty()) buildList { var last = ""; snapshot.forEach { m -> val b = bucket(m.updated); if (b != last) { add(b); last = b }; add(m) } }
+        if (q.isEmpty()) buildList {
+            val pins = snapshot.filter { it.pinned }
+            if (pins.isNotEmpty()) { add("Disematkan"); pins.forEach { add(it) } }
+            var last = ""
+            snapshot.filter { !it.pinned }.forEach { m -> val b = bucket(m.updated); if (b != last) { add(b); last = b }; add(m) }
+        }
         else snapshot.mapNotNull { hitOf(it, q, hl) }
     }
     // Header: judul + tombol cari. Kolom input baru muncul setelah tombol diketuk, jadi keyboard tidak
@@ -256,12 +263,17 @@ private fun ChatRow(vm: MainVM, m: ChatMeta, snippet: AnnotatedString?, q: Strin
     ) {
         Row(Modifier.padding(start = 16.dp, top = 2.dp, bottom = 2.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
-                Text(if (q.isEmpty()) AnnotatedString(m.title) else highlight(m.title, q, hl), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (m.pinned) Icon(Icons.Rounded.PushPin, "Disematkan", Modifier.size(14.dp), tint = cs.primary)
+                    Text(if (q.isEmpty()) AnnotatedString(m.title) else highlight(m.title, q, hl), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
+                }
                 if (snippet != null) Text(snippet, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
             }
             Box {
                 IconButton({ menu = true }, Modifier.size(36.dp)) { Icon(Icons.Rounded.MoreVert, "Opsi chat", Modifier.size(18.dp)) }
                 DropdownMenu(menu, { menu = false }) {
+                    DropdownMenuItem(text = { Text(if (m.pinned) "Lepas sematan" else "Sematkan") }, leadingIcon = { Icon(Icons.Rounded.PushPin, null) },
+                        onClick = { menu = false; vm.pinChat(m.id) })
                     DropdownMenuItem(text = { Text("Ganti nama") }, leadingIcon = { Icon(Icons.Rounded.Edit, null) }, onClick = { menu = false; vm.renameAsk = m })
                     DropdownMenuItem(text = { Text("Hapus", color = cs.error) }, leadingIcon = { Icon(Icons.Rounded.Delete, null, tint = cs.error) },
                         enabled = !(vm.busy && m.id == vm.currentId), onClick = { menu = false; vm.deleteAsk = m.id })
@@ -349,6 +361,14 @@ fun ChatScreen(vm: MainVM) {
     val ctx = LocalContext.current
     val cs = MaterialTheme.colorScheme
     val density = LocalDensity.current
+    val chatScope = rememberCoroutineScope()
+    val focusMgr = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    // Jangan fokus otomatis ke kolom pesan (dan jangan munculkan keyboard) saat masuk ke halaman chat
+    LaunchedEffect(Unit) { delay(150); focusMgr.clearFocus(); keyboard?.hide() }
+    val showDown by remember { derivedStateOf { ls.canScrollForward } }
+    fun toTop() { chatScope.launch { ls.animateScrollToItem(0) } }
+    fun toBottom() { chatScope.launch { ls.animateScrollToItem((ls.layoutInfo.totalItemsCount - 1).coerceAtLeast(0), 100000) } }
     var input by rememberSaveable { mutableStateOf("") }
     var sheet by remember { mutableStateOf(false) }
     var inputH by remember { mutableStateOf(76.dp) }
@@ -393,6 +413,16 @@ fun ChatScreen(vm: MainVM) {
             Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(inputH + 12.dp)
                 .background(Brush.verticalGradient(0f to Color.Transparent, 0.45f to cs.background.copy(alpha = 0.85f), 1f to cs.background)))
 
+            // Tombol "ke akhir chat" muncul saat tidak di dasar daftar
+            AnimatedVisibility(
+                showDown && vm.msgs.isNotEmpty(), Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = inputH + 12.dp),
+                enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut()
+            ) {
+                Surface(onClick = { toBottom() }, shape = CircleShape, color = cs.surfaceContainerHighest, contentColor = cs.onSurface,
+                    tonalElevation = 3.dp, shadowElevation = 6.dp, modifier = Modifier.size(44.dp)) {
+                    Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.KeyboardArrowDown, "Ke akhir chat") }
+                }
+            }
             // ── Kartu input ala Gemini/Claude ──
             val canSend = vm.busy || input.isNotBlank() || vm.attachments.isNotEmpty()
             var expanded by remember { mutableStateOf(false) }
@@ -439,7 +469,7 @@ fun ChatScreen(vm: MainVM) {
             }
         }
     }
-    if (sheet) AddSheet(vm, onDismiss = { sheet = false },
+    if (sheet) AddSheet(vm, onDismiss = { sheet = false }, onTop = { toTop() }, onBottom = { toBottom() },
         onCamera = {
             runCatching {
                 val f = File(File(ctx.cacheDir, "camera").apply { mkdirs() }, "cam_${System.currentTimeMillis()}.jpg")
@@ -470,7 +500,7 @@ private fun AttachmentChip(a: Attachment, onRemove: () -> Unit) {
 
 // ───────────── Sheet "Tambahkan ke chat" ─────────────
 @Composable
-private fun AddSheet(vm: MainVM, onDismiss: () -> Unit, onCamera: () -> Unit, onPhoto: () -> Unit, onFile: () -> Unit) {
+private fun AddSheet(vm: MainVM, onDismiss: () -> Unit, onTop: () -> Unit, onBottom: () -> Unit, onCamera: () -> Unit, onPhoto: () -> Unit, onFile: () -> Unit) {
     val ctx = LocalContext.current
     val goTab = LocalGoTab.current
     val cs = MaterialTheme.colorScheme
@@ -492,6 +522,8 @@ private fun AddSheet(vm: MainVM, onDismiss: () -> Unit, onCamera: () -> Unit, on
                 onClick = { close { goTab(1) } }) { Icon(Icons.Rounded.ChevronRight, null, tint = cs.onSurfaceVariant) }
             SwitchRow("Konfirmasi perintah", "Tanya dulu sebelum shell / tulis file", vm.confirm, Icons.Rounded.VerifiedUser) { vm.confirm = it; vm.save() }
             AddRow("Ulangi pesan terakhir", null, Icons.Rounded.Refresh, enabled = !vm.busy && vm.msgs.any { it.role == "user" }, onClick = { close { vm.retry() } })
+            AddRow("Ke awal chat", null, Icons.Rounded.VerticalAlignTop, enabled = vm.msgs.isNotEmpty(), onClick = { close(onTop) })
+            AddRow("Ke akhir chat", null, Icons.Rounded.VerticalAlignBottom, enabled = vm.msgs.isNotEmpty(), onClick = { close(onBottom) })
             AddRow("Salin seluruh chat", null, Icons.Rounded.ContentCopy, enabled = vm.msgs.isNotEmpty(), onClick = { close { copyToClipboard(ctx, vm.transcript()) } })
             AddRow("Hapus chat ini", null, Icons.Rounded.DeleteSweep, enabled = !vm.busy && vm.currentId != null, danger = true, onClick = { close { vm.deleteAsk = vm.currentId } })
             Spacer(Modifier.height(8.dp).navigationBarsPadding())
@@ -542,6 +574,8 @@ fun Bubble(m: Msg, idx: Int, isLast: Boolean, busy: Boolean, onEdit: (Int) -> Un
         else -> Color.Transparent to cs.onSurface                  // balasan AI tanpa bubble, langsung di latar
     }
     var open by remember { mutableStateOf(false) }
+    if (m.role == "assistant" && m.text.isBlank()) return   // placeholder streaming yang belum berisi teks
+    val streamingNow = m.role == "assistant" && isLast && busy
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
         Surface(
             color = bg, contentColor = fg, shape = RoundedCornerShape(if (m.role == "tool") 14.dp else 20.dp),
@@ -572,8 +606,11 @@ fun Bubble(m: Msg, idx: Int, isLast: Boolean, busy: Boolean, onEdit: (Int) -> Un
         }
         Row(Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             val tint = cs.onSurfaceVariant
-            IconButton({ copyToClipboard(ctx, if (m.role == "tool" && m.extra.isNotBlank()) m.text + "\n\n" + m.extra else m.text) }, Modifier.size(32.dp)) {
+            if (!streamingNow) IconButton({ copyToClipboard(ctx, if (m.role == "tool" && m.extra.isNotBlank()) m.text + "\n\n" + m.extra else m.text) }, Modifier.size(32.dp)) {
                 Icon(Icons.Rounded.ContentCopy, "Salin", Modifier.size(16.dp), tint = tint)
+            }
+            if (m.role == "error" && isLast && !busy) FilledTonalButton(onRetry, Modifier.height(32.dp), contentPadding = PaddingValues(horizontal = 12.dp)) {
+                Icon(Icons.Rounded.Refresh, null, Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("Ulangi", style = MaterialTheme.typography.labelLarge)
             }
             if (isUser && !busy) IconButton({ onEdit(idx) }, Modifier.size(32.dp)) { Icon(Icons.Rounded.Edit, "Edit", Modifier.size(16.dp), tint = tint) }
             if (m.role == "assistant" && isLast && !busy) IconButton(onRetry, Modifier.size(32.dp)) { Icon(Icons.Rounded.Refresh, "Ulangi", Modifier.size(16.dp), tint = tint) }

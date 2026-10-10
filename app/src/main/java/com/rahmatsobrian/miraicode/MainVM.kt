@@ -26,7 +26,7 @@ data class Workspace(val name: String, val path: String)
 class Attachment(val name: String, val text: String? = null, val imageB64: String? = null, val thumb: android.graphics.Bitmap? = null)
 data class Msg(val role: String, val text: String, val extra: String = "")
 /** Metadata satu percakapan di riwayat. [text] = gabungan teks user+AI (maks 12 rb karakter) untuk pencarian. */
-data class ChatMeta(val id: String, val title: String, val updated: Long, val text: String)
+data class ChatMeta(val id: String, val title: String, val updated: Long, val text: String, val pinned: Boolean = false)
 class Pending(val title: String, val detail: String, val result: CompletableDeferred<Boolean> = CompletableDeferred())
 
 /** Satu parameter dengan 3 mode: 0 = default (provider/app), 1 = slider, 2 = nilai custom yang diketik. */
@@ -202,7 +202,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
     // ───── Riwayat chat: satu file per percakapan + index.json ─────
     private fun clearHist() { while (hist.length() > 0) hist.remove(hist.length() - 1) }
     private fun indexJson(): String = JSONArray(chats.map {
-        JSONObject().put("id", it.id).put("t", it.title).put("u", it.updated).put("x", it.text)
+        JSONObject().put("id", it.id).put("t", it.title).put("u", it.updated).put("x", it.text).put("p", it.pinned)
     }).toString()
     private fun writeIndex() { val idx = indexJson(); writer.execute { runCatching { indexFile.writeText(idx) } } }
 
@@ -218,8 +218,9 @@ class MainVM(app: Application) : AndroidViewModel(app) {
         val id = currentId ?: java.util.UUID.randomUUID().toString().also { currentId = it }
         val title = chats.firstOrNull { it.id == id }?.title ?: titleOf()
         val text = msgs.filter { it.role == "user" || it.role == "assistant" }.joinToString("\n") { it.text }.take(12000)
+        val pin = chats.firstOrNull { it.id == id }?.pinned ?: false
         chats.removeAll { it.id == id }
-        chats.add(0, ChatMeta(id, title, System.currentTimeMillis(), text))
+        chats.add(0, ChatMeta(id, title, System.currentTimeMillis(), text, pin))
         val body = JSONObject()
             .put("msgs", JSONArray(msgs.map { JSONObject().put("r", it.role).put("t", it.text).put("x", it.extra) }))
             .put("hist", hist).toString()
@@ -252,6 +253,13 @@ class MainVM(app: Application) : AndroidViewModel(app) {
         writer.execute { runCatching { java.io.File(chatDir, "$id.json").delete(); indexFile.writeText(idx) } }
     }
 
+    /** Sematkan / lepas sematan chat (chat tersemat tampil di atas riwayat). */
+    fun pinChat(id: String) {
+        val i = chats.indexOfFirst { it.id == id }
+        if (i < 0) return
+        chats[i] = chats[i].copy(pinned = !chats[i].pinned); writeIndex()
+    }
+
     fun renameChat(id: String, title: String) {
         val i = chats.indexOfFirst { it.id == id }
         if (i < 0 || title.isBlank()) return
@@ -262,7 +270,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
         runCatching {
             val l = mutableListOf<ChatMeta>()
             if (indexFile.exists()) JSONArray(indexFile.readText()).let { a ->
-                for (i in 0 until a.length()) a.getJSONObject(i).let { l.add(ChatMeta(it.getString("id"), it.getString("t"), it.getLong("u"), it.optString("x"))) }
+                for (i in 0 until a.length()) a.getJSONObject(i).let { l.add(ChatMeta(it.getString("id"), it.getString("t"), it.getLong("u"), it.optString("x"), it.optBoolean("p", false))) }
             }
             chats.addAll(l.sortedByDescending { it.updated })
         }
