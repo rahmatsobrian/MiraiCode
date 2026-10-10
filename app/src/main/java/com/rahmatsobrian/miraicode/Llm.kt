@@ -191,7 +191,7 @@ object Llm {
         var last = 0L; var dirty = false
         fun emit(force: Boolean) {
             val now = System.currentTimeMillis()
-            if (dirty && (force || now - last >= 60)) { onText(text.toString()); last = now; dirty = false }
+            if (dirty && (force || now - last >= 8)) { onText(text.toString()); last = now; dirty = false }
         }
         var aIdx = 0
         c.inputStream.bufferedReader().use { r ->

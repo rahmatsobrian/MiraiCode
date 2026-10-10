@@ -12,6 +12,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -314,20 +316,37 @@ class MainVM(app: Application) : AndroidViewModel(app) {
                     val cfg = llmCfg()
                     // Streaming: bubble AI dibuat dulu lalu diisi bertahap
                     val live = if (cfg.stream) { msgs.add(Msg("assistant", "")); msgs.lastIndex } else -1
-                    val alive = java.util.concurrent.atomic.AtomicBoolean(true)
-                    val onText: (String) -> Unit = { t ->
-                        if (live >= 0) mainH.post { if (alive.get()) msgs.getOrNull(live)?.takeIf { it.role == "assistant" }?.let { msgs[live] = it.copy(text = t) } }
-                    }
+                    // Jaringan menulis ke [tgt]; ticker menampilkan teks sedikit demi sedikit (smooth, tidak per-potongan)
+                    val tgt = java.util.concurrent.atomic.AtomicReference("")
+                    val fin = java.util.concurrent.atomic.AtomicBoolean(false)
+                    val onText: (String) -> Unit = { t -> tgt.set(t) }
+                    val ticker = if (live >= 0) launch {
+                        var shown = 0
+                        while (true) {
+                            val t = tgt.get()
+                            if (shown < t.length) {
+                                val back = t.length - shown
+                                shown += (back / 4).coerceAtLeast(2).coerceAtMost(back)
+                                if (shown < t.length && Character.isHighSurrogate(t[shown - 1])) shown++
+                                msgs.getOrNull(live)?.takeIf { it.role == "assistant" }?.let { msgs[live] = it.copy(text = t.substring(0, shown.coerceAtMost(t.length))) }
+                            } else if (fin.get()) break
+                            delay(32)
+                        }
+                    } else null
                     val m = try {
                         runInterruptible(Dispatchers.IO) { Llm.chat(cfg, system, hist, Tools.schema, onText) }
                     } catch (e: Throwable) {
+                        ticker?.cancel()
                         if (live >= 0 && msgs.getOrNull(live)?.text.isNullOrBlank()) msgs.removeAt(live)
                         throw e
-                    } finally { alive.set(false) }
+                    }
                     hist.put(m)
                     val content = if (m.isNull("content")) "" else m.getString("content")
-                    if (live >= 0) { if (content.isNotBlank()) msgs[live] = Msg("assistant", content) else msgs.removeAt(live) }
-                    else if (content.isNotBlank()) msgs.add(Msg("assistant", content))
+                    if (live >= 0) {
+                        tgt.set(content); fin.set(true)
+                        withTimeoutOrNull(1500) { ticker?.join() }; ticker?.cancel()   // biarkan animasi mengejar sisa teks
+                        if (content.isNotBlank()) msgs[live] = Msg("assistant", content) else msgs.removeAt(live)
+                    } else if (content.isNotBlank()) msgs.add(Msg("assistant", content))
                     val calls = m.optJSONArray("tool_calls")
                     if (calls == null || calls.length() == 0) break
                     for (i in 0 until calls.length()) {

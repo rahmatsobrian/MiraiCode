@@ -289,6 +289,57 @@ fun Page(title: String, actions: @Composable RowScope.() -> Unit = {}, bottomIns
 }
 
 // ───────────── Chat ─────────────
+// ───────────── Badge mode akses (ketuk untuk ganti mode) ─────────────
+class ModeStyle(val label: String, val sub: String, val icon: ImageVector, val bg: Color, val fg: Color)
+
+fun modeStyle(m: Mode, cs: ColorScheme) = when (m) {
+    Mode.NONROOT -> ModeStyle("Non-root", "Sandbox app + storage izin", Icons.Rounded.Security, cs.secondaryContainer, cs.onSecondaryContainer)
+    Mode.SHIZUKU -> ModeStyle("Shizuku", "Shell uid 2000 (adb)", Icons.Rounded.Adb, cs.tertiaryContainer, cs.onTertiaryContainer)
+    Mode.ROOT -> ModeStyle("Root", "Seluruh sistem · berisiko", Icons.Rounded.AdminPanelSettings, cs.errorContainer, cs.onErrorContainer)
+}
+
+@Composable
+fun ModeBadge(vm: MainVM) {
+    val cs = MaterialTheme.colorScheme
+    var open by remember { mutableStateOf(false) }
+    val st = modeStyle(vm.mode, cs)
+    val bg by animateColorAsState(st.bg, label = "badgeBg")
+    val fg by animateColorAsState(st.fg, label = "badgeFg")
+    Box {
+        Surface(
+            onClick = { open = true }, enabled = !vm.busy, shape = CircleShape, color = bg, contentColor = fg,
+            modifier = Modifier.alpha(if (vm.busy) 0.6f else 1f)
+        ) {
+            Row(Modifier.padding(start = 12.dp, end = 6.dp, top = 7.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Icon(st.icon, null, Modifier.size(18.dp))
+                Text(st.label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                Icon(Icons.Rounded.ArrowDropDown, null, Modifier.size(18.dp))
+            }
+        }
+        DropdownMenu(open, { open = false }, offset = DpOffset(0.dp, 6.dp), shape = RoundedCornerShape(28.dp),
+            containerColor = cs.surfaceContainerHighest, tonalElevation = 6.dp, shadowElevation = 8.dp) {
+            Text("Mode akses", Modifier.padding(horizontal = 20.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge, color = cs.onSurfaceVariant)
+            Mode.entries.forEach { m ->
+                val ms = modeStyle(m, cs); val picked = m == vm.mode
+                Row(
+                    Modifier.padding(horizontal = 8.dp, vertical = 2.dp).widthIn(min = 240.dp)
+                        .clip(RoundedCornerShape(if (picked) 22.dp else 16.dp)).background(if (picked) ms.bg else Color.Transparent)
+                        .clickable { open = false; if (!picked) vm.pickMode(m) }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(ms.icon, null, tint = if (picked) ms.fg else cs.onSurfaceVariant)
+                    Column(Modifier.weight(1f)) {
+                        Text(ms.label, style = MaterialTheme.typography.titleMedium, color = if (picked) ms.fg else cs.onSurface)
+                        Text(ms.sub, style = MaterialTheme.typography.bodySmall, color = if (picked) ms.fg.copy(alpha = 0.8f) else cs.onSurfaceVariant)
+                    }
+                    if (picked) Icon(Icons.Rounded.Check, null, tint = ms.fg)
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun ChatScreen(vm: MainVM) {
     val ls = rememberLazyListState()
@@ -311,7 +362,7 @@ fun ChatScreen(vm: MainVM) {
         if (vm.busy && streamLen > 0 && (ls.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= vm.msgs.size - 1) ls.scrollToItem(vm.msgs.size)
     }
     Page(vm.chats.firstOrNull { it.id == vm.currentId }?.title ?: "MiraiCode", actions = {
-        AssistChip(onClick = {}, label = { Text(vm.mode.name) }, leadingIcon = { Icon(Icons.Rounded.Security, null, Modifier.size(18.dp)) })
+        ModeBadge(vm)
     }, bottomInset = false) {
         // Box mengikuti keyboard/nav bar. Daftar chat memenuhi seluruh area dan kartu input melayang di atasnya,
         // jadi area di sekeliling kartu transparan (pesan terlihat lewat belakang, memudar halus ke latar).
@@ -375,7 +426,10 @@ fun ChatScreen(vm: MainVM) {
                         FilledIconButton(
                             onClick = { if (vm.busy) vm.stop() else if (canSend) { vm.send(input.trim()); input = "" } },
                             modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp).size(40.dp), enabled = canSend,
-                            colors = IconButtonDefaults.filledIconButtonColors(disabledContainerColor = cs.surfaceContainerHighest, disabledContentColor = cs.onSurfaceVariant.copy(alpha = 0.5f))
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = if (vm.busy) cs.secondaryContainer else cs.primaryContainer,
+                                contentColor = if (vm.busy) cs.onSecondaryContainer else cs.onPrimaryContainer,
+                                disabledContainerColor = cs.surfaceContainerHighest, disabledContentColor = cs.onSurfaceVariant.copy(alpha = 0.5f))
                         ) { if (vm.busy) Icon(Icons.Rounded.Stop, "Berhenti") else Icon(Icons.Rounded.ArrowUpward, "Kirim") }
                     }
                 }
@@ -796,7 +850,7 @@ fun SettingGroup(title: String, rows: List<@Composable (Int, Int) -> Unit>) {
     }
 }
 
-/** Slider ramping (track 6dp, handle pill 4x20dp) agar tidak memakan tempat. */
+/** Slider ukuran sedang (track 12dp, handle pill 5x32dp). */
 @Composable
 fun CompactSlider(value: Float, onChange: (Float) -> Unit, range: ClosedFloatingPointRange<Float>, modifier: Modifier = Modifier) {
     val cs = MaterialTheme.colorScheme
@@ -807,11 +861,11 @@ fun CompactSlider(value: Float, onChange: (Float) -> Unit, range: ClosedFloating
     val cur by rememberUpdatedState(onChange)
     fun at(x: Float) = range.start + (x / w).coerceIn(0f, 1f) * span
     Canvas(
-        modifier.fillMaxWidth().height(28.dp).onSizeChanged { w = it.width.coerceAtLeast(1) }
+        modifier.fillMaxWidth().height(38.dp).onSizeChanged { w = it.width.coerceAtLeast(1) }
             .pointerInput(range) { detectTapGestures { cur(at(it.x)) } }
             .pointerInput(range) { detectHorizontalDragGestures { change, _ -> change.consume(); cur(at(change.position.x)) } }
     ) {
-        val th = 6.dp.toPx(); val hw = 4.dp.toPx(); val hh = 20.dp.toPx(); val gap = 6.dp.toPx(); val cy = size.height / 2
+        val th = 12.dp.toPx(); val hw = 5.dp.toPx(); val hh = 32.dp.toPx(); val gap = 6.dp.toPx(); val cy = size.height / 2
         val tx = (frac * size.width).coerceIn(hw / 2, size.width - hw / 2)
         drawRoundRect(inactive, Offset((tx + gap).coerceAtMost(size.width), cy - th / 2), Size((size.width - tx - gap).coerceAtLeast(0f), th), CornerRadius(th / 2))
         drawRoundRect(active, Offset(0f, cy - th / 2), Size((tx - gap).coerceAtLeast(0f), th), CornerRadius(th / 2))
