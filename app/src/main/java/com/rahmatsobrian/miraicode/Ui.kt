@@ -24,6 +24,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -168,6 +172,10 @@ private fun bucket(t: Long): String {
 private fun ColumnScope.DrawerContent(vm: MainVM, tab: Int, onTab: (Int) -> Unit, close: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     var query by rememberSaveable { mutableStateOf("") }
+    var searching by rememberSaveable { mutableStateOf(false) }
+    val focus = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    LaunchedEffect(searching) { if (searching) focus.requestFocus() else focusManager.clearFocus() }
     val q = query.trim()
     val hl = cs.primary.copy(alpha = 0.3f)
     val snapshot = vm.chats.toList()
@@ -175,17 +183,24 @@ private fun ColumnScope.DrawerContent(vm: MainVM, tab: Int, onTab: (Int) -> Unit
         if (q.isEmpty()) buildList { var last = ""; snapshot.forEach { m -> val b = bucket(m.updated); if (b != last) { add(b); last = b }; add(m) } }
         else snapshot.mapNotNull { hitOf(it, q, hl) }
     }
-    Text("MiraiCode", Modifier.padding(28.dp, 20.dp, 16.dp, 8.dp), style = MaterialTheme.typography.headlineSmall)
+    // Header: judul + tombol cari. Kolom input baru muncul setelah tombol diketuk, jadi keyboard tidak
+    // otomatis terbuka tiap sidebar dibuka dan tidak makan ruang.
+    if (!searching) Row(Modifier.fillMaxWidth().height(64.dp).padding(start = 28.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("MiraiCode", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
+        IconButton({ searching = true }) { Icon(Icons.Rounded.Search, "Cari chat") }
+    } else {
+        OutlinedTextField(
+            query, { query = it },
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 4.dp).focusRequester(focus),
+            placeholder = { Text("Cari chat") }, singleLine = true, shape = RoundedCornerShape(28.dp),
+            leadingIcon = { IconButton({ searching = false; query = "" }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Tutup pencarian") } },
+            trailingIcon = { if (query.isNotEmpty()) IconButton({ query = "" }) { Icon(Icons.Rounded.Close, "Hapus teks") } }
+        )
+    }
     NavigationDrawerItem(
         label = { Text("Chat baru") }, icon = { Icon(Icons.Rounded.Add, null) }, selected = false,
-        onClick = { if (!vm.busy) { vm.newChat(); onTab(0) }; close() },
+        onClick = { if (!vm.busy) { vm.newChat(); onTab(0) }; searching = false; query = ""; close() },
         modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
-    )
-    OutlinedTextField(
-        query, { query = it }, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-        placeholder = { Text("Cari chat") }, singleLine = true, shape = RoundedCornerShape(28.dp),
-        leadingIcon = { Icon(Icons.Rounded.Search, null) },
-        trailingIcon = { if (query.isNotEmpty()) IconButton({ query = "" }) { Icon(Icons.Rounded.Close, "Hapus pencarian") } }
     )
     LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 8.dp)) {
         if (rows.isEmpty()) item {
@@ -195,8 +210,8 @@ private fun ColumnScope.DrawerContent(vm: MainVM, tab: Int, onTab: (Int) -> Unit
         items(rows) { r ->
             when (r) {
                 is String -> Text(r, Modifier.padding(28.dp, 14.dp, 16.dp, 4.dp), style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
-                is ChatMeta -> ChatRow(vm, r, null, q, hl, tab == 0 && r.id == vm.currentId) { onTab(0); vm.openChat(r.id); close() }
-                is Hit -> ChatRow(vm, r.meta, r.snippet, q, hl, tab == 0 && r.meta.id == vm.currentId) { onTab(0); vm.openChat(r.meta.id); close() }
+                is ChatMeta -> ChatRow(vm, r, null, q, hl, tab == 0 && r.id == vm.currentId) { onTab(0); vm.openChat(r.id); searching = false; query = ""; close() }
+                is Hit -> ChatRow(vm, r.meta, r.snippet, q, hl, tab == 0 && r.meta.id == vm.currentId) { onTab(0); vm.openChat(r.meta.id); searching = false; query = ""; close() }
             }
         }
     }
@@ -589,28 +604,6 @@ fun SettingsScreen(vm: MainVM) {
                 OutlinedTextField(vm.model, { vm.model = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("Model") }, singleLine = true)
                 OutlinedTextField(vm.system, { vm.system = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("System prompt") }, minLines = 3)
             }
-            Section("Status root") {
-                val cs = MaterialTheme.colorScheme
-                val su = remember(vm.rootOk) { vm.suBinaryVisible() }
-                ListItem(
-                    headlineContent = { Text("Akses root aplikasi") },
-                    supportingContent = { Text(when {
-                        vm.rootChecking -> "Memeriksa… setujui permintaan root jika muncul."
-                        vm.rootOk == true -> "Sudah diberikan. MiraiCode bisa menjalankan perintah sebagai root."
-                        vm.rootOk == false -> "Belum diberikan / tidak tersedia. " + if (su) "su terdeteksi: izinkan MiraiCode di Magisk/KernelSU, lalu periksa ulang." else "su tidak terdeteksi, perangkat mungkin tidak ter-root."
-                        else -> "Belum diperiksa. " + if (su) "su terdeteksi di perangkat." else "su tidak terlihat oleh aplikasi (belum tentu tidak ter-root)."
-                    }) },
-                    leadingContent = {
-                        if (vm.rootChecking) LoadingIndicator(Modifier.size(32.dp))
-                        else when (vm.rootOk) {
-                            true -> Icon(Icons.Rounded.CheckCircle, "Diberikan", tint = cs.primary)
-                            false -> Icon(Icons.Rounded.Cancel, "Belum", tint = cs.error)
-                            null -> Icon(Icons.Rounded.Info, "Belum diperiksa", tint = cs.onSurfaceVariant)
-                        }
-                    }
-                )
-                FilledTonalButton({ vm.checkRoot() }, enabled = !vm.rootChecking) { Text(if (vm.rootOk == null) "Periksa akses root" else "Periksa ulang") }
-            }
             Section("Mode akses") {
                 Choice(listOf("Non-root", "Shizuku", "Root"), vm.mode.ordinal) { vm.pickMode(Mode.entries[it]) }
                 Text(when (vm.mode) {
@@ -633,6 +626,26 @@ fun SettingsScreen(vm: MainVM) {
                     OutlinedButton({ runCatching { if (shizukuUp) Shizuku.requestPermission(0) }; tick++ }) { Text("Minta izin Shizuku") }
                     TextButton({ tick++ }) { Text("Segarkan") }
                 }
+                val cs = MaterialTheme.colorScheme
+                val su = remember(vm.rootOk) { vm.suBinaryVisible() }
+                ListItem(
+                    headlineContent = { Text("Akses root aplikasi") },
+                    supportingContent = { Text(when {
+                        vm.rootChecking -> "Memeriksa… setujui permintaan root jika muncul."
+                        vm.rootOk == true -> "Sudah diberikan. MiraiCode bisa menjalankan perintah sebagai root."
+                        vm.rootOk == false -> "Belum diberikan / tidak tersedia. " + if (su) "su terdeteksi: izinkan MiraiCode di Magisk/KernelSU, lalu periksa ulang." else "su tidak terdeteksi, perangkat mungkin tidak ter-root."
+                        else -> "Belum diperiksa. " + if (su) "su terdeteksi di perangkat." else "su tidak terlihat oleh aplikasi (belum tentu tidak ter-root)."
+                    }) },
+                    leadingContent = {
+                        if (vm.rootChecking) LoadingIndicator(Modifier.size(32.dp))
+                        else when (vm.rootOk) {
+                            true -> Icon(Icons.Rounded.CheckCircle, "Diberikan", tint = cs.primary)
+                            false -> Icon(Icons.Rounded.Cancel, "Belum", tint = cs.error)
+                            null -> Icon(Icons.Rounded.Info, "Belum diperiksa", tint = cs.onSurfaceVariant)
+                        }
+                    }
+                )
+                FilledTonalButton({ vm.checkRoot() }, enabled = !vm.rootChecking) { Text(if (vm.rootOk == null) "Periksa akses root" else "Periksa ulang") }
             }
             Section("Tampilan") {
                 Choice(listOf("Sistem", "Terang", "Gelap", "AMOLED"), vm.theme) { vm.theme = it; vm.save() }
