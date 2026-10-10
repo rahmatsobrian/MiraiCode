@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
+import java.io.File
 
 enum class Mode { NONROOT, SHIZUKU, ROOT }
 
@@ -41,5 +42,17 @@ object Exec {
             Mode.SHIZUKU -> shizuku().exec(full)
         }
         out.take(20000).ifBlank { "(tidak ada output)" }
+    }
+
+    /** Daftar subfolder di [path]; null kalau tidak bisa dibaca (izin/tidak ada). */
+    suspend fun listDirs(mode: Mode, path: String): List<String>? = withContext(Dispatchers.IO) {
+        runCatching {
+            if (mode == Mode.NONROOT) File(path).listFiles()?.filter { it.isDirectory }?.map { it.name }?.sortedBy { it.lowercase() }
+            else {
+                val out = run(mode, "if ( cd ${q(path)} ) 2>/dev/null; then ( cd ${q(path)} && ls -1Ap 2>/dev/null | grep '/\$' ); else echo __ERR__; fi", null)
+                if (out.startsWith("__ERR__")) null
+                else out.lines().filter { it.endsWith("/") }.map { it.dropLast(1) }.sortedBy { it.lowercase() }
+            }
+        }.getOrNull()
     }
 }

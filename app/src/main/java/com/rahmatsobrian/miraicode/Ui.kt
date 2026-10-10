@@ -3,6 +3,7 @@
 package com.rahmatsobrian.miraicode
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -524,18 +525,14 @@ fun FabMenu(modifier: Modifier, items: List<Pair<String, ImageVector>>, onPick: 
 // ───────────── Workspace ─────────────
 @Composable
 fun WorkspaceScreen(vm: MainVM) {
+    val ctx = LocalContext.current
     var dlg by remember { mutableStateOf(false) }
     Page("Workspace") {
         Box(Modifier.fillMaxSize()) {
             LazyColumn(contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 120.dp), verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
                 itemsIndexed(vm.workspaces) { i, w ->
-                    SegmentedListItem(
-                        onClick = { vm.active = i; vm.save() },
-                        shapes = ListItemDefaults.segmentedShapes(i, vm.workspaces.size),
-                        leadingContent = { Icon(Icons.Rounded.Folder, null) },
-                        supportingContent = { Text(w.path) },
-                        trailingContent = { if (i == vm.active) Icon(Icons.Rounded.Check, "Aktif") }
-                    ) { Text(w.name) }
+                    SettingRow(i, vm.workspaces.size, w.name, w.path, if (w.path == "/") Icons.Rounded.AdminPanelSettings else Icons.Rounded.Folder,
+                        { vm.active = i; vm.save() }) { if (i == vm.active) Icon(Icons.Rounded.CheckCircle, "Aktif", tint = MaterialTheme.colorScheme.primary) }
                 }
             }
             FabMenu(Modifier.align(Alignment.BottomEnd).padding(16.dp),
@@ -545,13 +542,121 @@ fun WorkspaceScreen(vm: MainVM) {
         }
     }
     if (dlg) {
+        val rules = remember(vm.mode) { wsRules(vm.mode, ctx) }
         var n by remember { mutableStateOf("") }; var p by remember { mutableStateOf("/storage/emulated/0/") }
+        var picker by remember { mutableStateOf(false) }
+        val path = normPath(if (vm.mode == Mode.ROOT && p.trim().lowercase() == "root") "/root" else p)
+        val valid = p.trim().let { it.startsWith("/") || (vm.mode == Mode.ROOT && it.lowercase() == "root") } && rules.canPick(path)
         AlertDialog(onDismissRequest = { dlg = false }, title = { Text("Workspace baru") },
             text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(n, { n = it }, label = { Text("Nama") }, singleLine = true)
-                OutlinedTextField(p, { p = it }, label = { Text("Path folder") }, singleLine = true) } },
-            confirmButton = { Button({ if (n.isNotBlank() && p.startsWith("/")) { vm.workspaces.add(Workspace(n, p)); vm.save(); dlg = false } }) { Text("Tambah") } },
+                OutlinedTextField(p, { p = it }, label = { Text("Path folder") }, singleLine = true, isError = p.isNotBlank() && !valid,
+                    trailingIcon = { IconButton({ picker = true }) { Icon(Icons.Rounded.FolderOpen, "Pilih folder") } })
+                Text(rules.hint, style = MaterialTheme.typography.bodySmall,
+                    color = if (vm.mode == Mode.ROOT) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                if (p.isNotBlank() && !valid) Text("Path ini tidak diizinkan pada mode ${rules.label}.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            } },
+            confirmButton = { Button({
+                if (valid) {
+                    val name = n.ifBlank { path.substringAfterLast('/').ifEmpty { "Root (/)" } }
+                    vm.workspaces.add(Workspace(name, path)); vm.save(); dlg = false
+                }
+            }, enabled = valid) { Text("Tambah") } },
             dismissButton = { TextButton({ dlg = false }) { Text("Batal") } })
+        if (picker) FolderPickerSheet(vm.mode, path, { picker = false }) { p = it; if (n.isBlank()) n = it.substringAfterLast('/').ifEmpty { "Root (/)" } }
+    }
+}
+
+// ───────────── Aturan & picker folder workspace per mode ─────────────
+class WsQuick(val label: String, val path: String)
+class WsRules(
+    val label: String, val hint: String, val start: String, val quick: List<WsQuick>,
+    val canBrowse: (String) -> Boolean, val canPick: (String) -> Boolean
+)
+
+fun normPath(p: String): String {
+    val parts = mutableListOf<String>()
+    for (seg in p.trim().split("/")) when (seg) {
+        "", "." -> {}
+        ".." -> if (parts.isNotEmpty()) parts.removeAt(parts.lastIndex)
+        else -> parts.add(seg)
+    }
+    return "/" + parts.joinToString("/")
+}
+
+fun wsRules(mode: Mode, ctx: Context): WsRules {
+    val ext = "/storage/emulated/0"
+    return when (mode) {
+        // Non-root: dikurung di penyimpanan internal + folder privat app sendiri.
+        Mode.NONROOT -> {
+            val allowed = listOf(ext, "/sdcard", ctx.dataDir.absolutePath)
+            val ok = { p: String -> allowed.any { p == it || p.startsWith("$it/") } }
+            WsRules("Non-root", "Non-root: hanya penyimpanan internal & folder app sendiri (butuh izin 'All files access').", ext,
+                listOf(WsQuick("Penyimpanan", ext), WsQuick("Folder app", ctx.filesDir.absolutePath)), ok, ok)
+        }
+        // Shizuku: shell uid 2000 -> bisa menjelajah hampir seluruh sistem + Android/data, tapi tidak bisa menulis di '/' atau area sistem.
+        Mode.SHIZUKU -> WsRules("Shizuku",
+            "Shizuku (shell/adb): bisa menjelajah luas termasuk Android/data & /data/local/tmp. Folder '/' dan area sistem hanya untuk mode Root.", ext,
+            listOf(WsQuick("Penyimpanan", ext), WsQuick("Android/data", "$ext/Android/data"), WsQuick("/data/local/tmp", "/data/local/tmp")),
+            { true }, { it != "/" && !it.startsWith("/system") && !it.startsWith("/vendor") && !it.startsWith("/proc") })
+        // Root: bebas, termasuk '/'.
+        Mode.ROOT -> WsRules("Root",
+            "Root: bebas memilih folder mana pun, termasuk '/'. Hati-hati, perintah AI bisa mengubah seluruh sistem.", "/",
+            listOf(WsQuick("/", "/"), WsQuick("/root", "/root"), WsQuick("/data", "/data"), WsQuick("/sdcard", ext), WsQuick("/data/local/tmp", "/data/local/tmp")),
+            { true }, { true })
+    }
+}
+
+@Composable
+fun FolderPickerSheet(mode: Mode, initial: String, onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    val ctx = LocalContext.current
+    val cs = MaterialTheme.colorScheme
+    val rules = remember(mode) { wsRules(mode, ctx) }
+    var path by remember { mutableStateOf(if (initial.isNotBlank() && rules.canBrowse(initial)) initial else rules.start) }
+    var dirs by remember { mutableStateOf<List<String>?>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    LaunchedEffect(path, mode) { loading = true; dirs = Exec.listDirs(mode, path); loading = false }
+    val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    val parent = if (path == "/") null else path.substringBeforeLast('/').ifEmpty { "/" }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state, containerColor = cs.surface) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Pilih folder workspace", style = MaterialTheme.typography.titleLarge)
+            Text(rules.hint, style = MaterialTheme.typography.bodySmall, color = if (mode == Mode.ROOT) cs.error else cs.onSurfaceVariant)
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                rules.quick.forEach { qk -> FilterChip(path == qk.path, { path = qk.path }, label = { Text(qk.label) }) }
+            }
+            Surface(shape = RoundedCornerShape(20.dp), color = cs.surfaceContainerHigh) {
+                Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({ parent?.let { path = it } }, enabled = parent != null && rules.canBrowse(parent)) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Naik satu level") }
+                    Text(path, Modifier.weight(1f), fontFamily = FontFamily.Monospace, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            Box(Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 360.dp), contentAlignment = Alignment.Center) {
+                val list = dirs
+                when {
+                    loading -> LoadingIndicator(Modifier.size(40.dp))
+                    list == null -> Text("Folder tidak bisa dibaca (izin ditolak / tidak ada)." + if (mode == Mode.ROOT) " Pastikan akses root sudah diberikan." else "",
+                        color = cs.error, style = MaterialTheme.typography.bodyMedium)
+                    list.isEmpty() -> Text("Tidak ada subfolder.", color = cs.onSurfaceVariant)
+                    else -> LazyColumn(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
+                        itemsIndexed(list) { i, d ->
+                            val child = if (path == "/") "/$d" else "$path/$d"
+                            SettingRow(i, list.size, d, null, Icons.Rounded.Folder, { path = child }, enabled = rules.canBrowse(child)) {
+                                Icon(Icons.Rounded.ChevronRight, null, tint = cs.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+            if (!rules.canPick(path)) Text("Folder ini tidak dapat dipilih pada mode ${rules.label}.", style = MaterialTheme.typography.bodySmall, color = cs.error)
+            Button({
+                scope.launch { state.hide() }.invokeOnCompletion { onPick(path); onDismiss() }
+            }, Modifier.fillMaxWidth().defaultMinSize(minHeight = 52.dp), enabled = rules.canPick(path)) {
+                Icon(Icons.Rounded.Check, null, Modifier.padding(end = 8.dp)); Text("Pilih folder ini")
+            }
+            Spacer(Modifier.height(8.dp).navigationBarsPadding())
+        }
     }
 }
 
