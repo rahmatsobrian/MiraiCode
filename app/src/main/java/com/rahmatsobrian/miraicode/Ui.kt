@@ -60,6 +60,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -651,7 +652,7 @@ fun SwitchRow(title: String, sub: String, checked: Boolean, icon: ImageVector = 
 fun Section(title: String, content: @Composable ColumnScope.() -> Unit) =
     Card(
         Modifier.fillMaxWidth(), shape = RoundedCornerShape(32.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(title, Modifier.padding(start = 4.dp, bottom = 2.dp), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
@@ -673,16 +674,31 @@ fun SettingGroup(title: String, vararg rows: @Composable (Int, Int) -> Unit) {
 fun SettingRow(
     i: Int, n: Int, title: String, sub: String?, icon: ImageVector?, onClick: () -> Unit,
     enabled: Boolean = true, trailing: @Composable () -> Unit = {}
-) = SegmentedListItem(
-    onClick = onClick, shapes = ListItemDefaults.segmentedShapes(i, n), enabled = enabled,
-    leadingContent = if (icon != null) ({ Icon(icon, null) }) else null,
-    supportingContent = if (sub != null) ({ Text(sub) }) else null,
-    trailingContent = trailing
-) { Text(title, fontWeight = FontWeight.Medium) }
+) {
+    val cs = MaterialTheme.colorScheme
+    // Semua isi ditaruh di satu Row (CenterVertically) supaya ikon & trailing selalu
+    // di tengah vertikal, berapa pun jumlah baris judul + deskripsi.
+    SegmentedListItem(
+        onClick = onClick, shapes = ListItemDefaults.segmentedShapes(i, n), enabled = enabled,
+        colors = ListItemDefaults.colors(containerColor = cs.surfaceContainerHigh)
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (icon != null) Icon(icon, null, tint = cs.primary)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium, color = cs.onSurface)
+                if (sub != null) Text(sub, style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
+            }
+            Box(contentAlignment = Alignment.Center) { trailing() }
+        }
+    }
+}
 
 /** Baris dengan nilai saat ini + panah naik/turun; klik membuka daftar pilihan mengambang. */
 @Composable
-fun DropdownRow(i: Int, n: Int, title: String, sub: String?, icon: ImageVector?, options: List<String>, sel: Int, onSel: (Int) -> Unit) {
+fun DropdownRow(
+    i: Int, n: Int, title: String, sub: String?, icon: ImageVector?, options: List<String>, sel: Int,
+    optionSubs: List<String>? = null, onSel: (Int) -> Unit
+) {
     val cs = MaterialTheme.colorScheme
     var open by remember { mutableStateOf(false) }
     SettingRow(i, n, title, sub, icon, { open = true }) {
@@ -691,13 +707,33 @@ fun DropdownRow(i: Int, n: Int, title: String, sub: String?, icon: ImageVector?,
                 Text(options.getOrElse(sel) { "" }, style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
                 Icon(Icons.Rounded.UnfoldMore, null, tint = cs.onSurfaceVariant)
             }
-            DropdownMenu(open, { open = false }, shape = RoundedCornerShape(24.dp)) {
+            DropdownMenu(
+                expanded = open, onDismissRequest = { open = false },
+                offset = DpOffset(0.dp, 8.dp), shape = RoundedCornerShape(28.dp),
+                containerColor = cs.surfaceContainerHighest, tonalElevation = 6.dp, shadowElevation = 8.dp
+            ) {
                 options.forEachIndexed { j, o ->
-                    DropdownMenuItem(
-                        text = { Text(o, color = if (j == sel) cs.primary else cs.onSurface) },
-                        onClick = { open = false; onSel(j) },
-                        trailingIcon = if (j == sel) ({ Icon(Icons.Rounded.Check, null, tint = cs.primary) }) else null
-                    )
+                    val picked = j == sel
+                    val bg by animateColorAsState(if (picked) cs.primaryContainer else Color.Transparent, label = "menuItemBg")
+                    Row(
+                        Modifier.padding(horizontal = 8.dp, vertical = 2.dp).widthIn(min = 220.dp)
+                            .clip(RoundedCornerShape(if (picked) 22.dp else 16.dp)).background(bg)
+                            .clickable { open = false; onSel(j) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text(o, style = MaterialTheme.typography.titleMedium,
+                                color = if (picked) cs.onPrimaryContainer else cs.onSurface)
+                            optionSubs?.getOrNull(j)?.let {
+                                Text(it, style = MaterialTheme.typography.bodySmall,
+                                    color = if (picked) cs.onPrimaryContainer.copy(alpha = 0.8f) else cs.onSurfaceVariant)
+                            }
+                        }
+                        Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                            if (picked) Icon(Icons.Rounded.Check, null, tint = cs.onPrimaryContainer)
+                        }
+                    }
                 }
             }
         }
@@ -740,7 +776,8 @@ fun SettingsScreen(vm: MainVM) {
                         Mode.NONROOT -> "Terbatas: sandbox app + storage yang diizinkan (semua file lewat izin 'All files access')."
                         Mode.SHIZUKU -> "Menengah: shell uid 2000 (adb). Akses lebih luas dari app biasa, tidak penuh."
                         Mode.ROOT -> "Penuh: seluruh sistem. Berisiko tinggi." + (vm.rootOk?.let { if (it) " (root terdeteksi)" else " (root TIDAK tersedia)" } ?: "")
-                    }, Icons.Rounded.AdminPanelSettings, listOf("Non-root", "Shizuku", "Root"), vm.mode.ordinal) { vm.pickMode(Mode.entries[it]) } },
+                    }, Icons.Rounded.AdminPanelSettings, listOf("Non-root", "Shizuku", "Root"), vm.mode.ordinal,
+                    listOf("Sandbox app + storage izin", "Shell uid 2000 (adb)", "Seluruh sistem")) { vm.pickMode(Mode.entries[it]) } },
                 { i, n -> SwitchSettingRow(i, n, "Konfirmasi perintah", "Minta persetujuan sebelum shell/tulis file", Icons.Rounded.VerifiedUser, vm.confirm) { vm.confirm = it; vm.save() } }
             )
             val cs = MaterialTheme.colorScheme
