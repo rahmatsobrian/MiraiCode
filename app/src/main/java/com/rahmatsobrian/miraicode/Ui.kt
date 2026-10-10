@@ -72,6 +72,13 @@ import androidx.compose.material3.ToggleFloatingActionButtonDefaults.animateIcon
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.role
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
 import rikka.shizuku.Shizuku
 
 // ───────────── App shell + navigasi ─────────────
@@ -84,6 +91,8 @@ fun MiraiApp(vm: MainVM) {
     val slide = MaterialTheme.motionScheme.defaultSpatialSpec<IntOffset>()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    // Kembali: Workspace/Setelan -> Chat. Di halaman Chat tidak dicegat, jadi keluar dari aplikasi.
+    BackHandler(enabled = tab != 0 && drawer.currentValue == DrawerValue.Closed) { tab = 0 }
     // Navigasi pindah dari bottom bar ke sidebar (drawer) -> area chat lebih luas
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {   // memberi warna latar + warna teks/ikon default
     ModalNavigationDrawer(drawerState = drawer, drawerContent = {
@@ -266,7 +275,9 @@ val LocalGoTab = staticCompositionLocalOf<(Int) -> Unit> { {} }
 @Composable
 fun Page(title: String, actions: @Composable RowScope.() -> Unit = {}, bottomInset: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
     val open = LocalOpenDrawer.current
-    Column(Modifier.fillMaxSize().statusBarsPadding().then(if (bottomInset) Modifier.navigationBarsPadding() else Modifier)) {
+    val focusMgr = LocalFocusManager.current
+    Column(Modifier.fillMaxSize().statusBarsPadding().then(if (bottomInset) Modifier.navigationBarsPadding() else Modifier)
+        .pointerInput(Unit) { detectTapGestures { focusMgr.clearFocus() } }) {
         Row(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(open) { Icon(Icons.Rounded.Menu, "Menu") }
             Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -785,7 +796,30 @@ fun SettingGroup(title: String, rows: List<@Composable (Int, Int) -> Unit>) {
     }
 }
 
-/** Baris slider: judul + nilai (atau "Default") + tombol reset, slider di bawahnya. */
+/** Slider ramping (track 6dp, handle pill 4x20dp) agar tidak memakan tempat. */
+@Composable
+fun CompactSlider(value: Float, onChange: (Float) -> Unit, range: ClosedFloatingPointRange<Float>, modifier: Modifier = Modifier) {
+    val cs = MaterialTheme.colorScheme
+    val active = cs.primary; val inactive = cs.secondaryContainer
+    val span = (range.endInclusive - range.start).coerceAtLeast(0.0001f)
+    val frac = ((value - range.start) / span).coerceIn(0f, 1f)
+    var w by remember { mutableIntStateOf(1) }
+    val cur by rememberUpdatedState(onChange)
+    fun at(x: Float) = range.start + (x / w).coerceIn(0f, 1f) * span
+    Canvas(
+        modifier.fillMaxWidth().height(28.dp).onSizeChanged { w = it.width.coerceAtLeast(1) }
+            .pointerInput(range) { detectTapGestures { cur(at(it.x)) } }
+            .pointerInput(range) { detectHorizontalDragGestures { change, _ -> change.consume(); cur(at(change.position.x)) } }
+    ) {
+        val th = 6.dp.toPx(); val hw = 4.dp.toPx(); val hh = 20.dp.toPx(); val gap = 6.dp.toPx(); val cy = size.height / 2
+        val tx = (frac * size.width).coerceIn(hw / 2, size.width - hw / 2)
+        drawRoundRect(inactive, Offset((tx + gap).coerceAtMost(size.width), cy - th / 2), Size((size.width - tx - gap).coerceAtLeast(0f), th), CornerRadius(th / 2))
+        drawRoundRect(active, Offset(0f, cy - th / 2), Size((tx - gap).coerceAtLeast(0f), th), CornerRadius(th / 2))
+        drawRoundRect(active, Offset(tx - hw / 2, cy - hh / 2), Size(hw, hh), CornerRadius(hw / 2))
+    }
+}
+
+/** Baris slider: ikon + judul di kiri; tombol reset lalu nilai ("Default"/angka) di pojok kanan; slider ramping + deskripsi di bawah. */
 @Composable
 fun SliderRow(
     i: Int, n: Int, title: String, icon: ImageVector, label: String, isSet: Boolean, value: Float,
@@ -796,16 +830,15 @@ fun SliderRow(
         onClick = {}, shapes = ListItemDefaults.segmentedShapes(i, n),
         colors = ListItemDefaults.colors(containerColor = cs.surfaceContainerHigh)
     ) {
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(icon, null, tint = cs.primary)
                 Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium, color = cs.onSurface)
-                Text(label, style = MaterialTheme.typography.labelLarge, color = if (isSet) cs.primary else cs.onSurfaceVariant)
-                Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
-                    if (isSet) IconButton(onReset, Modifier.size(36.dp)) { Icon(Icons.Rounded.RestartAlt, "Kembalikan ke default", Modifier.size(20.dp), tint = cs.onSurfaceVariant) }
-                }
+                if (isSet) IconButton(onReset, Modifier.size(32.dp)) { Icon(Icons.Rounded.RestartAlt, "Kembalikan ke default", Modifier.size(20.dp), tint = cs.onSurfaceVariant) }
+                Text(label, Modifier.widthIn(min = 56.dp), textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                    style = MaterialTheme.typography.labelLarge, color = if (isSet) cs.primary else cs.onSurfaceVariant)
             }
-            Slider(value, onChange, valueRange = range)
+            CompactSlider(value, onChange, range)
             if (note != null) Text(note, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
         }
     }
@@ -970,7 +1003,7 @@ fun SettingsScreen(vm: MainVM) {
                     onChange = { vm.topP = (it * 20).roundToInt() / 20f; vm.save() }, onReset = { vm.topP = Float.NaN; vm.save() }) }
                 add { i, n -> SliderRow(i, n, "Maks token output", Icons.Rounded.Notes, if (vm.maxTokens == 0) "Default" else "${vm.maxTokens}",
                     vm.maxTokens != 0, (tokenSteps.indexOfFirst { it >= vm.maxTokens }.takeIf { it >= 0 && vm.maxTokens != 0 } ?: 4).toFloat(), 0f..(tokenSteps.lastIndex).toFloat(),
-                    note = if (anth) "Claude wajib punya batas; kosong = 4096." else null,
+                    note = if (anth) "Batas panjang jawaban. Claude wajib punya batas; default 4096." else "Batas panjang jawaban AI. Default mengikuti provider.",
                     onChange = { vm.maxTokens = tokenSteps[it.roundToInt().coerceIn(0, tokenSteps.lastIndex)]; vm.save() }, onReset = { vm.maxTokens = 0; vm.save() }) }
                 if (!anth) {
                     add { i, n -> SliderRow(i, n, "Frequency penalty", Icons.Rounded.Repeat, if (vm.freqPen.isNaN()) "Default" else "%.1f".format(vm.freqPen),
@@ -1036,7 +1069,7 @@ fun SettingsScreen(vm: MainVM) {
                 } }
             )
             SettingGroup("Tampilan",
-                { i, n -> DropdownRow(i, n, "Tema", null, Icons.Rounded.DarkMode, listOf("Sistem", "Terang", "Gelap", "AMOLED"), vm.theme) { vm.theme = it; vm.save() } },
+                { i, n -> DropdownRow(i, n, "Tema", "Ikuti sistem, terang, gelap, atau hitam pekat (AMOLED).", Icons.Rounded.DarkMode, listOf("Sistem", "Terang", "Gelap", "AMOLED"), vm.theme) { vm.theme = it; vm.save() } },
                 { i, n -> SwitchSettingRow(i, n, "Dynamic color", if (Build.VERSION.SDK_INT >= 31) "Ikuti wallpaper (Android 12+)" else "Perlu Android 12+", Icons.Rounded.Palette, vm.dynamic) { vm.dynamic = it; vm.save() } }
             )
         }
