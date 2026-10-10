@@ -24,6 +24,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -72,25 +76,8 @@ fun MiraiApp(vm: MainVM) {
     // Navigasi pindah dari bottom bar ke sidebar (drawer) -> area chat lebih luas
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {   // memberi warna latar + warna teks/ikon default
     ModalNavigationDrawer(drawerState = drawer, drawerContent = {
-        ModalDrawerSheet(Modifier.width(280.dp)) {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text("MiraiCode", Modifier.padding(28.dp, 24.dp, 16.dp, 2.dp), style = MaterialTheme.typography.headlineSmall)
-                Text(vm.workspaces.getOrNull(vm.active)?.name ?: "", Modifier.padding(28.dp, 0.dp, 16.dp, 16.dp),
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                NavigationDrawerItem(
-                    label = { Text("Chat baru") }, icon = { Icon(Icons.Rounded.Add, null) }, selected = false,
-                    onClick = { if (!vm.busy) { vm.clearChat(); tab = 0 }; scope.launch { drawer.close() } },
-                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
-                )
-                HorizontalDivider(Modifier.padding(horizontal = 28.dp, vertical = 8.dp))
-                tabs.forEachIndexed { i, (l, ic) ->
-                    NavigationDrawerItem(
-                        label = { Text(l) }, icon = { Icon(ic, null) }, selected = tab == i,
-                        onClick = { tab = i; scope.launch { drawer.close() } },
-                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
-                    )
-                }
-            }
+        ModalDrawerSheet(Modifier.width(320.dp)) {
+            DrawerContent(vm, tab, onTab = { tab = it }, close = { scope.launch { drawer.close() } })
         }
     }) {
         CompositionLocalProvider(LocalOpenDrawer provides { scope.launch { drawer.open() } }, LocalGoTab provides { tab = it }) {
@@ -103,6 +90,21 @@ fun MiraiApp(vm: MainVM) {
             }
         }
     }
+    }
+    vm.renameAsk?.let { m ->
+        var t by remember(m.id) { mutableStateOf(m.title) }
+        AlertDialog(onDismissRequest = { vm.renameAsk = null }, title = { Text("Ganti nama chat") },
+            text = { OutlinedTextField(t, { t = it }, singleLine = true, modifier = Modifier.fillMaxWidth()) },
+            confirmButton = { Button({ vm.renameChat(m.id, t); vm.renameAsk = null }) { Text("Simpan") } },
+            dismissButton = { TextButton({ vm.renameAsk = null }) { Text("Batal") } })
+    }
+    vm.deleteAsk?.let { id ->
+        val m = vm.chats.firstOrNull { it.id == id }
+        AlertDialog(onDismissRequest = { vm.deleteAsk = null },
+            icon = { Icon(Icons.Rounded.DeleteSweep, null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Hapus chat?") }, text = { Text("\"${m?.title ?: "Chat ini"}\" akan dihapus permanen dari riwayat.") },
+            confirmButton = { Button({ vm.deleteChat(id); vm.deleteAsk = null }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Hapus") } },
+            dismissButton = { TextButton({ vm.deleteAsk = null }) { Text("Batal") } })
     }
     vm.crash?.let { c ->
         val ctx = LocalContext.current
@@ -130,6 +132,109 @@ fun MiraiApp(vm: MainVM) {
         text = { Text("Mode Root memberi AI akses ke SELURUH sistem: /system, /data, partisi, data aplikasi lain. Perintah yang salah dapat menghapus data, membuat bootloop, atau merusak perangkat. Aktifkan hanya jika kamu paham risikonya, dan biarkan konfirmasi perintah tetap aktif.") },
         confirmButton = { Button({ vm.confirmRoot() }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Saya paham, aktifkan") } },
         dismissButton = { TextButton({ vm.rootWarn = false }) { Text("Batal") } })
+}
+
+// ───────────── Sidebar: riwayat + cari ─────────────
+private data class Hit(val meta: ChatMeta, val snippet: AnnotatedString?)
+
+private fun highlight(t: String, q: String, hl: Color): AnnotatedString = buildAnnotatedString {
+    append(t)
+    var i = t.indexOf(q, 0, ignoreCase = true)
+    while (i >= 0 && q.isNotEmpty()) {
+        addStyle(SpanStyle(background = hl, fontWeight = FontWeight.Bold), i, i + q.length)
+        i = t.indexOf(q, i + q.length, ignoreCase = true)
+    }
+}
+
+private fun hitOf(m: ChatMeta, q: String, hl: Color): Hit? {
+    val inTitle = m.title.contains(q, ignoreCase = true)
+    val i = m.text.indexOf(q, ignoreCase = true)
+    if (!inTitle && i < 0) return null
+    if (i < 0) return Hit(m, null)
+    val st = (i - 30).coerceAtLeast(0); val en = (i + q.length + 70).coerceAtMost(m.text.length)
+    val pre = if (st > 0) "…" else ""; val post = if (en < m.text.length) "…" else ""
+    val raw = m.text.substring(st, en).replace('\n', ' ')
+    val off = pre.length + (i - st)
+    return Hit(m, buildAnnotatedString { append(pre + raw + post); addStyle(SpanStyle(background = hl, fontWeight = FontWeight.Bold), off, off + q.length) })
+}
+
+private fun bucket(t: Long): String {
+    val cal = java.util.Calendar.getInstance().apply { set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0); set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0) }
+    val today = cal.timeInMillis; val day = 86_400_000L
+    return when { t >= today -> "Hari ini"; t >= today - day -> "Kemarin"; t >= today - 7 * day -> "7 hari terakhir"; t >= today - 30 * day -> "30 hari terakhir"; else -> "Lebih lama" }
+}
+
+@Composable
+private fun ColumnScope.DrawerContent(vm: MainVM, tab: Int, onTab: (Int) -> Unit, close: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    var query by rememberSaveable { mutableStateOf("") }
+    val q = query.trim()
+    val hl = cs.primary.copy(alpha = 0.3f)
+    val snapshot = vm.chats.toList()
+    val rows: List<Any> = remember(q, snapshot, hl) {
+        if (q.isEmpty()) buildList { var last = ""; snapshot.forEach { m -> val b = bucket(m.updated); if (b != last) { add(b); last = b }; add(m) } }
+        else snapshot.mapNotNull { hitOf(it, q, hl) }
+    }
+    Text("MiraiCode", Modifier.padding(28.dp, 20.dp, 16.dp, 8.dp), style = MaterialTheme.typography.headlineSmall)
+    NavigationDrawerItem(
+        label = { Text("Chat baru") }, icon = { Icon(Icons.Rounded.Add, null) }, selected = false,
+        onClick = { if (!vm.busy) { vm.newChat(); onTab(0) }; close() },
+        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+    )
+    OutlinedTextField(
+        query, { query = it }, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+        placeholder = { Text("Cari chat") }, singleLine = true, shape = RoundedCornerShape(28.dp),
+        leadingIcon = { Icon(Icons.Rounded.Search, null) },
+        trailingIcon = { if (query.isNotEmpty()) IconButton({ query = "" }) { Icon(Icons.Rounded.Close, "Hapus pencarian") } }
+    )
+    LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 8.dp)) {
+        if (rows.isEmpty()) item {
+            Text(if (q.isEmpty()) "Belum ada riwayat chat." else "Tidak ada chat yang cocok dengan \"$q\".",
+                Modifier.padding(28.dp, 16.dp), color = cs.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+        }
+        items(rows) { r ->
+            when (r) {
+                is String -> Text(r, Modifier.padding(28.dp, 14.dp, 16.dp, 4.dp), style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                is ChatMeta -> ChatRow(vm, r, null, q, hl, tab == 0 && r.id == vm.currentId) { onTab(0); vm.openChat(r.id); close() }
+                is Hit -> ChatRow(vm, r.meta, r.snippet, q, hl, tab == 0 && r.meta.id == vm.currentId) { onTab(0); vm.openChat(r.meta.id); close() }
+            }
+        }
+    }
+    HorizontalDivider(Modifier.padding(horizontal = 28.dp, vertical = 4.dp))
+    listOf(1 to ("Workspace" to Icons.Rounded.Folder), 2 to ("Setelan" to Icons.Rounded.Settings)).forEach { (i, li) ->
+        NavigationDrawerItem(
+            label = { Text(li.first) }, icon = { Icon(li.second, null) }, selected = tab == i,
+            onClick = { onTab(i); close() }, modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+        )
+    }
+    Spacer(Modifier.height(8.dp))
+}
+
+@Composable
+private fun ChatRow(vm: MainVM, m: ChatMeta, snippet: AnnotatedString?, q: String, hl: Color, selected: Boolean, onOpen: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    var menu by remember { mutableStateOf(false) }
+    Surface(
+        onClick = onOpen, shape = RoundedCornerShape(28.dp),
+        color = if (selected) cs.secondaryContainer else Color.Transparent,
+        contentColor = if (selected) cs.onSecondaryContainer else cs.onSurface,
+        modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth()
+    ) {
+        Row(Modifier.padding(start = 16.dp, top = 2.dp, bottom = 2.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
+                Text(if (q.isEmpty()) AnnotatedString(m.title) else highlight(m.title, q, hl), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
+                if (snippet != null) Text(snippet, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            }
+            Box {
+                IconButton({ menu = true }, Modifier.size(36.dp)) { Icon(Icons.Rounded.MoreVert, "Opsi chat", Modifier.size(18.dp)) }
+                DropdownMenu(menu, { menu = false }) {
+                    DropdownMenuItem(text = { Text("Ganti nama") }, leadingIcon = { Icon(Icons.Rounded.Edit, null) }, onClick = { menu = false; vm.renameAsk = m })
+                    DropdownMenuItem(text = { Text("Hapus", color = cs.error) }, leadingIcon = { Icon(Icons.Rounded.Delete, null, tint = cs.error) },
+                        enabled = !(vm.busy && m.id == vm.currentId), onClick = { menu = false; vm.deleteAsk = m.id })
+                }
+            }
+        }
+    }
 }
 
 val LocalOpenDrawer = staticCompositionLocalOf<() -> Unit> { {} }
@@ -167,7 +272,7 @@ fun ChatScreen(vm: MainVM) {
     LaunchedEffect(vm.msgs.size, vm.busy) {
         if (vm.msgs.isNotEmpty()) ls.animateScrollToItem(if (vm.busy) vm.msgs.size else vm.msgs.lastIndex)
     }
-    Page("MiraiCode", actions = {
+    Page(vm.chats.firstOrNull { it.id == vm.currentId }?.title ?: "MiraiCode", actions = {
         AssistChip(onClick = {}, label = { Text(vm.mode.name) }, leadingIcon = { Icon(Icons.Rounded.Security, null, Modifier.size(18.dp)) })
     }, bottomInset = false) {
         // Box mengikuti keyboard/nav bar. Daftar chat memenuhi seluruh area dan kartu input melayang di atasnya,
@@ -294,7 +399,7 @@ private fun AddSheet(vm: MainVM, onDismiss: () -> Unit, onCamera: () -> Unit, on
                 onClick = { vm.confirm = !vm.confirm; vm.save() }) { Switch(vm.confirm, { vm.confirm = it; vm.save() }) }
             AddRow("Ulangi pesan terakhir", null, Icons.Rounded.Refresh, enabled = !vm.busy && vm.msgs.any { it.role == "user" }, onClick = { close { vm.retry() } })
             AddRow("Salin seluruh chat", null, Icons.Rounded.ContentCopy, enabled = vm.msgs.isNotEmpty(), onClick = { close { copyToClipboard(ctx, vm.transcript()) } })
-            AddRow("Bersihkan chat", null, Icons.Rounded.DeleteSweep, enabled = !vm.busy && vm.msgs.isNotEmpty(), danger = true, onClick = { close { vm.clearChat() } })
+            AddRow("Hapus chat ini", null, Icons.Rounded.DeleteSweep, enabled = !vm.busy && vm.currentId != null, danger = true, onClick = { close { vm.deleteAsk = vm.currentId } })
             Spacer(Modifier.height(8.dp).navigationBarsPadding())
         }
     }
@@ -475,6 +580,7 @@ fun SettingsScreen(vm: MainVM) {
     }
     val shizukuUp = remember(tick) { runCatching { Shizuku.pingBinder() }.getOrDefault(false) }
     val shizukuOk = remember(tick) { runCatching { shizukuUp && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED }.getOrDefault(false) }
+    LaunchedEffect(Unit) { if (vm.mode == Mode.ROOT && vm.rootOk == null) vm.checkRoot() }
     Page("Setelan") {
         Column(Modifier.imePadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Section("Provider AI (OpenAI-compatible)") {
@@ -483,6 +589,28 @@ fun SettingsScreen(vm: MainVM) {
                 OutlinedTextField(vm.model, { vm.model = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("Model") }, singleLine = true)
                 OutlinedTextField(vm.system, { vm.system = it; vm.save() }, Modifier.fillMaxWidth(), label = { Text("System prompt") }, minLines = 3)
             }
+            Section("Status root") {
+                val cs = MaterialTheme.colorScheme
+                val su = remember(vm.rootOk) { vm.suBinaryVisible() }
+                ListItem(
+                    headlineContent = { Text("Akses root aplikasi") },
+                    supportingContent = { Text(when {
+                        vm.rootChecking -> "Memeriksa… setujui permintaan root jika muncul."
+                        vm.rootOk == true -> "Sudah diberikan. MiraiCode bisa menjalankan perintah sebagai root."
+                        vm.rootOk == false -> "Belum diberikan / tidak tersedia. " + if (su) "su terdeteksi: izinkan MiraiCode di Magisk/KernelSU, lalu periksa ulang." else "su tidak terdeteksi, perangkat mungkin tidak ter-root."
+                        else -> "Belum diperiksa. " + if (su) "su terdeteksi di perangkat." else "su tidak terlihat oleh aplikasi (belum tentu tidak ter-root)."
+                    }) },
+                    leadingContent = {
+                        if (vm.rootChecking) LoadingIndicator(Modifier.size(32.dp))
+                        else when (vm.rootOk) {
+                            true -> Icon(Icons.Rounded.CheckCircle, "Diberikan", tint = cs.primary)
+                            false -> Icon(Icons.Rounded.Cancel, "Belum", tint = cs.error)
+                            null -> Icon(Icons.Rounded.Info, "Belum diperiksa", tint = cs.onSurfaceVariant)
+                        }
+                    }
+                )
+                FilledTonalButton({ vm.checkRoot() }, enabled = !vm.rootChecking) { Text(if (vm.rootOk == null) "Periksa akses root" else "Periksa ulang") }
+            }
             Section("Mode akses") {
                 Choice(listOf("Non-root", "Shizuku", "Root"), vm.mode.ordinal) { vm.pickMode(Mode.entries[it]) }
                 Text(when (vm.mode) {
@@ -490,9 +618,6 @@ fun SettingsScreen(vm: MainVM) {
                     Mode.SHIZUKU -> "Menengah: shell uid 2000 (adb). Akses lebih luas dari app biasa, tidak penuh."
                     Mode.ROOT -> "Penuh: seluruh sistem. Berisiko tinggi." + (vm.rootOk?.let { if (it) " (root terdeteksi)" else " (root TIDAK tersedia)" } ?: "")
                 }, style = MaterialTheme.typography.bodySmall)
-                if (vm.rootChecking) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    CircularWavyProgressIndicator(Modifier.size(40.dp)); Text("Memeriksa akses root…")
-                }
                 SwitchRow("Konfirmasi perintah", "Minta persetujuan sebelum shell/tulis file", vm.confirm) { vm.confirm = it; vm.save() }
             }
             Section("Izin") {

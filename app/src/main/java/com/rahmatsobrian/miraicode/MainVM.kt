@@ -21,6 +21,8 @@ data class Workspace(val name: String, val path: String)
 /** Lampiran: file teks/kode (dimasukkan ke prompt) atau gambar (JPEG base64, dikirim sebagai image_url). */
 class Attachment(val name: String, val text: String? = null, val imageB64: String? = null, val thumb: android.graphics.Bitmap? = null)
 data class Msg(val role: String, val text: String, val extra: String = "")
+/** Metadata satu percakapan di riwayat. [text] = gabungan teks user+AI (maks 12 rb karakter) untuk pencarian. */
+data class ChatMeta(val id: String, val title: String, val updated: Long, val text: String)
 class Pending(val title: String, val detail: String, val result: CompletableDeferred<Boolean> = CompletableDeferred())
 
 class MainVM(app: Application) : AndroidViewModel(app) {
@@ -94,7 +96,14 @@ class MainVM(app: Application) : AndroidViewModel(app) {
         }
     }
     fun removeAttachment(i: Int) { if (i in attachments.indices) attachments.removeAt(i) }
-    private val chatFile = java.io.File(app.filesDir, "chat.json")
+    private val oldChatFile = java.io.File(app.filesDir, "chat.json")   // format lama (1 chat) -> dimigrasi
+    private val chatDir = java.io.File(app.filesDir, "chats").apply { mkdirs() }
+    private val indexFile = java.io.File(chatDir, "index.json")
+    private val writer = java.util.concurrent.Executors.newSingleThreadExecutor()   // tulis file berurutan, tidak di main thread
+    val chats = mutableStateListOf<ChatMeta>()           // riwayat, terbaru di atas
+    var currentId by mutableStateOf<String?>(null)       // null = chat baru yang belum tersimpan
+    var renameAsk by mutableStateOf<ChatMeta?>(null)
+    var deleteAsk by mutableStateOf<String?>(null)
 
     /** Hentikan generate: putus koneksi, tolak konfirmasi yang menunggu, batalkan coroutine. */
     fun stop() { Llm.abort(); pending?.result?.complete(false); job?.cancel() }
@@ -119,16 +128,76 @@ class MainVM(app: Application) : AndroidViewModel(app) {
         "$who:\n${it.text}" + if (it.extra.isNotBlank()) "\n${it.extra}" else ""
     }
 
-    private fun saveChat() = runCatching {
-        chatFile.writeText(JSONObject()
-            .put("msgs", JSONArray(msgs.map { JSONObject().put("r", it.role).put("t", it.text).put("x", it.extra) }))
-            .put("hist", hist).toString())
+    // ───── Riwayat chat: satu file per percakapan + index.json ─────
+    private fun clearHist() { while (hist.length() > 0) hist.remove(hist.length() - 1) }
+    private fun indexJson(): String = JSONArray(chats.map {
+        JSONObject().put("id", it.id).put("t", it.title).put("u", it.updated).put("x", it.text)
+    }).toString()
+    private fun writeIndex() { val idx = indexJson(); writer.execute { runCatching { indexFile.writeText(idx) } } }
+
+    private fun titleOf(): String {
+        val u = msgs.firstOrNull { it.role == "user" }
+        val t = u?.text?.trim()?.lines()?.firstOrNull { it.isNotBlank() }?.trim()
+        return (t ?: u?.extra?.lines()?.firstOrNull())?.take(40)?.ifBlank { null } ?: "Chat baru"
     }
-    private fun loadChat() = runCatching {
-        if (!chatFile.exists()) return@runCatching
-        val o = JSONObject(chatFile.readText())
+
+    /** Simpan percakapan aktif (dipanggil tiap ada perubahan). Chat kosong tidak disimpan / dihapus dari riwayat. */
+    private fun saveChat() {
+        if (msgs.isEmpty()) { currentId?.let { deleteChat(it) }; return }
+        val id = currentId ?: java.util.UUID.randomUUID().toString().also { currentId = it }
+        val title = chats.firstOrNull { it.id == id }?.title ?: titleOf()
+        val text = msgs.filter { it.role == "user" || it.role == "assistant" }.joinToString("\n") { it.text }.take(12000)
+        chats.removeAll { it.id == id }
+        chats.add(0, ChatMeta(id, title, System.currentTimeMillis(), text))
+        val body = JSONObject()
+            .put("msgs", JSONArray(msgs.map { JSONObject().put("r", it.role).put("t", it.text).put("x", it.extra) }))
+            .put("hist", hist).toString()
+        val idx = indexJson()
+        writer.execute { runCatching { java.io.File(chatDir, "$id.json").writeText(body); indexFile.writeText(idx) } }
+    }
+
+    private fun applyChat(o: JSONObject) {
+        msgs.clear(); clearHist(); attachments.clear()
         o.getJSONArray("msgs").let { a -> for (i in 0 until a.length()) a.getJSONObject(i).let { msgs.add(Msg(it.getString("r"), it.getString("t"), it.optString("x"))) } }
         o.getJSONArray("hist").let { a -> for (i in 0 until a.length()) hist.put(a.get(i)) }
+    }
+
+    fun newChat() { if (busy) return; msgs.clear(); clearHist(); attachments.clear(); currentId = null }
+
+    fun openChat(id: String) {
+        if (busy || id == currentId) return
+        viewModelScope.launch {
+            val o = withContext(Dispatchers.IO) { runCatching { JSONObject(java.io.File(chatDir, "$id.json").readText()) }.getOrNull() }
+            if (o == null) { toast("Chat tidak ditemukan"); chats.removeAll { it.id == id }; writeIndex(); return@launch }
+            applyChat(o); currentId = id
+        }
+    }
+
+    fun deleteChat(id: String) {
+        if (busy && id == currentId) return
+        chats.removeAll { it.id == id }
+        if (id == currentId) { msgs.clear(); clearHist(); currentId = null }
+        val idx = indexJson()
+        writer.execute { runCatching { java.io.File(chatDir, "$id.json").delete(); indexFile.writeText(idx) } }
+    }
+
+    fun renameChat(id: String, title: String) {
+        val i = chats.indexOfFirst { it.id == id }
+        if (i < 0 || title.isBlank()) return
+        chats[i] = chats[i].copy(title = title.trim().take(80)); writeIndex()
+    }
+
+    private fun loadChats() {
+        runCatching {
+            val l = mutableListOf<ChatMeta>()
+            if (indexFile.exists()) JSONArray(indexFile.readText()).let { a ->
+                for (i in 0 until a.length()) a.getJSONObject(i).let { l.add(ChatMeta(it.getString("id"), it.getString("t"), it.getLong("u"), it.optString("x"))) }
+            }
+            chats.addAll(l.sortedByDescending { it.updated })
+        }
+        if (oldChatFile.exists()) {   // migrasi chat.json lama menjadi satu percakapan
+            runCatching { applyChat(JSONObject(oldChatFile.readText())); saveChat(); oldChatFile.delete() }
+        } else chats.firstOrNull()?.let { openChat(it.id) }   // buka chat terakhir
     }
 
     init {
@@ -139,7 +208,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
         }
         if (workspaces.isEmpty()) workspaces.add(Workspace("Default", "/storage/emulated/0/MiraiCode"))
         if (active !in workspaces.indices) active = 0
-        loadChat()
+        loadChats()
     }
 
     fun save() = sp.edit {
@@ -151,8 +220,18 @@ class MainVM(app: Application) : AndroidViewModel(app) {
 
     fun pickMode(m: Mode) { if (m == Mode.ROOT) rootWarn = true else { mode = m; save() } }
     fun confirmRoot() { rootWarn = false; mode = Mode.ROOT; save(); checkRoot() }
-    fun checkRoot() { viewModelScope.launch(Dispatchers.IO) { rootChecking = true; rootOk = runCatching { Shell.getShell().isRoot }.getOrDefault(false); rootChecking = false } }
-    fun clearChat() { msgs.clear(); while (hist.length() > 0) hist.remove(0); saveChat() }
+    /** Minta shell root (memunculkan dialog Magisk/KernelSU bila belum diizinkan). Shell lama yang non-root ditutup agar bisa dicek ulang. */
+    fun checkRoot() {
+        if (rootChecking) return
+        rootChecking = true
+        viewModelScope.launch(Dispatchers.IO) {
+            rootOk = runCatching { Shell.getCachedShell()?.takeIf { !it.isRoot }?.close(); Shell.getShell().isRoot }.getOrDefault(false)
+            rootChecking = false
+        }
+    }
+    /** Petunjuk saja (tidak pasti): apakah binary su terlihat oleh app. */
+    fun suBinaryVisible() = listOf("/system/bin/su", "/system/xbin/su", "/sbin/su", "/su/bin/su", "/system/sbin/su", "/vendor/bin/su", "/product/bin/su", "/debug_ramdisk/su")
+        .any { java.io.File(it).exists() }
 
     private suspend fun ask(title: String, detail: String): Boolean {
         val p = Pending(title, detail); pending = p
@@ -177,6 +256,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
             }
             msgs.add(Msg("user", text, atts.joinToString("\n") { (if (it.imageB64 != null) "🖼 " else "📎 ") + it.name }))
             hist.put(JSONObject().put("role", "user").put("content", content))
+            saveChat()   // percakapan langsung muncul di riwayat
             val base = hist.length(); var done = false
             try {
                 for (step in 0 until 8) {
