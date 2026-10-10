@@ -64,8 +64,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
                     if (bytes.take(4096).any { it == 0.toByte() }) error("Hanya file teks/kode yang didukung")
                     val cut = bytes.size > 200_000
                     var t = String(bytes, 0, minOf(bytes.size, 200_000), Charsets.UTF_8)
-                    if (cut) t += "
-… (dipotong, file lebih dari 200 KB)"
+                    if (cut) t += "\n… (dipotong, file lebih dari 200 KB)"
                     Attachment(displayName(uri, "file.txt"), text = t)
                 }
             }
