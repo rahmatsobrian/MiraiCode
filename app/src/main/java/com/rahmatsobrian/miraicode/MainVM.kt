@@ -104,6 +104,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
     var theme by mutableIntStateOf(sp.getInt("theme", 0))        // 0 sistem,1 terang,2 gelap,3 amoled
     var dynamic by mutableStateOf(sp.getBoolean("dynamic", true))
     var confirm by mutableStateOf(sp.getBoolean("confirm", true))
+    var keepAlive by mutableStateOf(sp.getBoolean("keepAlive", true))   // foreground service saat AI bekerja
     var mode by mutableStateOf(Mode.valueOf(sp.getString("mode", "NONROOT")!!))
     var active by mutableIntStateOf(sp.getInt("active", 0))
     val workspaces = mutableStateListOf<Workspace>()
@@ -295,7 +296,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
         putString("${provider.name}_url", baseUrl); putString("${provider.name}_key", apiKey); putString("${provider.name}_model", model)
         putString("system", system)
         knobs.forEach { it.save(this) }; putInt("reasoning", reasoning); putBoolean("streaming", streaming)
-        putInt("theme", theme); putBoolean("dynamic", dynamic); putBoolean("confirm", confirm)
+        putInt("theme", theme); putBoolean("dynamic", dynamic); putBoolean("confirm", confirm); putBoolean("keepAlive", keepAlive)
         putString("mode", mode.name); putInt("active", active)
         putString("ws", JSONArray(workspaces.map { JSONObject().put("n", it.name).put("p", it.path) }).toString())
     }
@@ -320,11 +321,20 @@ class MainVM(app: Application) : AndroidViewModel(app) {
         val r = p.result.await(); pending = null; return r
     }
 
+    private fun startKeepAlive() {
+        if (!keepAlive) return
+        runCatching { androidx.core.content.ContextCompat.startForegroundService(getApplication(), android.content.Intent(getApplication(), KeepAliveService::class.java)) }
+    }
+    private fun stopKeepAlive() {
+        runCatching { getApplication<Application>().stopService(android.content.Intent(getApplication(), KeepAliveService::class.java)) }
+    }
+
     fun send(text: String) {
         val atts = attachments.toList()
         if (busy || (text.isBlank() && atts.isEmpty())) return
         attachments.clear()
         busy = true
+        startKeepAlive()
         job = viewModelScope.launch {
             // File teks masuk ke prompt; gambar dikirim sebagai image_url (butuh model yang mendukung vision)
             val full = buildString {
@@ -399,7 +409,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
             finally {
                 // Gagal/dibatalkan di tengah loop tool -> riwayat API bisa menggantung (tool_calls tanpa hasil). Pangkas ke pesan user.
                 if (!done) while (hist.length() > base) hist.remove(hist.length() - 1)
-                busy = false; toolName = null; saveChat()
+                busy = false; toolName = null; saveChat(); stopKeepAlive()
             }
         }
     }

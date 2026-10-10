@@ -84,6 +84,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
+import android.os.PowerManager
+import androidx.core.app.NotificationManagerCompat
 import rikka.shizuku.Shizuku
 
 // ───────────── App shell + navigasi ─────────────
@@ -1107,6 +1109,12 @@ fun SettingsScreen(vm: MainVM) {
     val ctx = LocalContext.current
     var tick by remember { mutableIntStateOf(0) }
     val perm = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { tick++ }
+    // Layar pengaturan sistem: status diperbarui otomatis saat pengguna kembali ke app
+    val settingsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { tick++ }
+    val pm = remember { ctx.getSystemService(Context.POWER_SERVICE) as PowerManager }
+    val battOk = remember(tick) { pm.isIgnoringBatteryOptimizations(ctx.packageName) }
+    val notifOk = remember(tick) { NotificationManagerCompat.from(ctx).areNotificationsEnabled() }
+    var notifAsked by rememberSaveable { mutableStateOf(false) }
     val allFiles = remember(tick) {
         if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
         else ContextCompat.checkSelfPermission(ctx, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
@@ -1213,7 +1221,7 @@ fun SettingsScreen(vm: MainVM) {
             val su = remember(vm.rootOk) { vm.suBinaryVisible() }
             SettingGroup("Izin",
                 { i, n -> SettingRow(i, n, "Akses semua file", if (allFiles) "Diberikan" else "Belum diberikan", Icons.Rounded.Folder, {
-                    if (Build.VERSION.SDK_INT >= 30) ctx.startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${ctx.packageName}")))
+                    if (Build.VERSION.SDK_INT >= 30) settingsLauncher.launch(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${ctx.packageName}")))
                     else perm.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE))
                 }) { Icon(if (allFiles) Icons.Rounded.CheckCircle else Icons.Rounded.ChevronRight, null, tint = if (allFiles) cs.primary else cs.onSurfaceVariant) } },
                 { i, n -> SettingRow(i, n, "Shizuku",
@@ -1237,6 +1245,31 @@ fun SettingsScreen(vm: MainVM) {
                         null -> Icon(Icons.Rounded.Info, "Belum diperiksa", tint = cs.onSurfaceVariant)
                     }
                 } }
+            )
+            SettingGroup("Latar belakang",
+                { i, n -> SwitchSettingRow(i, n, "Tetap berjalan di latar belakang",
+                    "Tahan proses dengan notifikasi selama AI bekerja, supaya jawaban tidak terputus saat layar mati atau app ditutup.",
+                    Icons.Rounded.PlayCircle, vm.keepAlive) { vm.keepAlive = it; vm.save() } },
+                { i, n -> SettingRow(i, n, "Abaikan optimasi baterai",
+                    if (battOk) "Diizinkan. Sistem tidak membatasi baterai app ini (ketuk untuk melihat daftar)."
+                    else "Belum diizinkan. Ketuk untuk mematikan optimasi baterai agar proses tidak dibunuh sistem.",
+                    Icons.Rounded.BatteryChargingFull, {
+                        val i1 = if (battOk) Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                                 else Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${ctx.packageName}"))
+                        runCatching { settingsLauncher.launch(i1) }.onFailure { runCatching { settingsLauncher.launch(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) } }
+                    }) { Icon(if (battOk) Icons.Rounded.CheckCircle else Icons.Rounded.ChevronRight, null, tint = if (battOk) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) } },
+                { i, n -> SettingRow(i, n, "Notifikasi",
+                    if (notifOk) "Diizinkan. Notifikasi 'sedang bekerja' tampil selama AI memproses."
+                    else "Belum diizinkan. Layanan latar belakang tetap jalan, tapi notifikasinya tersembunyi.",
+                    Icons.Rounded.Notifications, {
+                        if (Build.VERSION.SDK_INT >= 33 && !notifAsked && !notifOk) { notifAsked = true; perm.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS)) }
+                        else settingsLauncher.launch(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName))
+                    }) { Icon(if (notifOk) Icons.Rounded.CheckCircle else Icons.Rounded.ChevronRight, null, tint = if (notifOk) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) } },
+                { i, n -> SettingRow(i, n, "Pengaturan khusus HP",
+                    "Xiaomi, Oppo, Vivo, Samsung, Huawei: buka Info aplikasi → Baterai → 'Tanpa batasan', aktifkan Autostart, dan kunci app di Recent apps.",
+                    Icons.Rounded.Settings, {
+                        settingsLauncher.launch(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${ctx.packageName}")))
+                    }) { Icon(Icons.Rounded.OpenInNew, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) } }
             )
             SettingGroup("Tampilan",
                 { i, n -> DropdownRow(i, n, "Tema", "Ikuti sistem, terang, gelap, atau hitam pekat (AMOLED).", Icons.Rounded.DarkMode, listOf("Sistem", "Terang", "Gelap", "AMOLED"), vm.theme) { vm.theme = it; vm.save() } },
