@@ -914,10 +914,46 @@ fun ParamRow(
                 Text(label, Modifier.padding(top = 2.dp).widthIn(min = 48.dp), textAlign = androidx.compose.ui.text.style.TextAlign.End,
                     style = MaterialTheme.typography.labelLarge, color = if (knob.mode == 0) cs.onSurfaceVariant else cs.primary)
             }
-            Choice(listOf("Default", "Slider", "Custom"), knob.mode, 40.dp) { m ->
-                if (m == 1 && knob.value.isNaN()) knob.value = (parsed ?: spec.start).coerceIn(spec.min, spec.max)
-                if (m == 2 && knob.text.isBlank() && !knob.value.isNaN()) knob.text = fmt(knob.value)
-                knob.mode = m; onChange()
+            var menu by remember { mutableStateOf(false) }
+            val modeNames = listOf("Default", "Slider", "Custom")
+            val modeSubs = listOf("Pakai nilai bawaan provider/aplikasi", "Pilih cepat dalam rentang umum", "Ketik nilai sendiri, bebas rentang")
+            Box {
+                Surface(onClick = { menu = true }, shape = RoundedCornerShape(16.dp), color = cs.surfaceContainerHighest, modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Mode", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+                        Spacer(Modifier.weight(1f))
+                        Text(modeNames[knob.mode.coerceIn(0, 2)], style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = cs.onSurface)
+                        Icon(Icons.Rounded.UnfoldMore, null, Modifier.padding(start = 4.dp), tint = cs.onSurfaceVariant)
+                    }
+                }
+                DropdownMenu(menu, { menu = false }, offset = DpOffset(0.dp, 6.dp), shape = RoundedCornerShape(24.dp),
+                    containerColor = cs.surfaceContainerHighest, tonalElevation = 6.dp, shadowElevation = 8.dp) {
+                    modeNames.forEachIndexed { m, name ->
+                        val picked = m == knob.mode
+                        Row(
+                            Modifier.padding(horizontal = 8.dp, vertical = 2.dp).widthIn(min = 240.dp)
+                                .clip(RoundedCornerShape(if (picked) 20.dp else 14.dp))
+                                .background(if (picked) cs.primaryContainer else Color.Transparent)
+                                .clickable {
+                                    menu = false
+                                    if (m == 1 && knob.value.isNaN()) knob.value = (parsed ?: spec.start).coerceIn(spec.min, spec.max)
+                                    if (m == 2 && knob.text.isBlank() && !knob.value.isNaN()) knob.text = fmt(knob.value)
+                                    knob.mode = m; onChange()
+                                }
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(name, style = MaterialTheme.typography.titleMedium, color = if (picked) cs.onPrimaryContainer else cs.onSurface)
+                                Text(modeSubs[m], style = MaterialTheme.typography.bodySmall,
+                                    color = if (picked) cs.onPrimaryContainer.copy(alpha = 0.8f) else cs.onSurfaceVariant)
+                            }
+                            Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                                if (picked) Icon(Icons.Rounded.Check, null, tint = cs.onPrimaryContainer)
+                            }
+                        }
+                    }
+                }
             }
             if (knob.mode == 1) Column {
                 CompactSlider(sliderVal, { x ->
