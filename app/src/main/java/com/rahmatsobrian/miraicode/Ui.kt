@@ -414,7 +414,7 @@ fun ChatScreen(vm: MainVM) {
                 .background(Brush.verticalGradient(0f to Color.Transparent, 0.45f to cs.background.copy(alpha = 0.85f), 1f to cs.background)))
 
             // Tombol "ke akhir chat" muncul saat tidak di dasar daftar
-            AnimatedVisibility(
+            androidx.compose.animation.AnimatedVisibility(
                 showDown && vm.msgs.isNotEmpty(), Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = inputH + 12.dp),
                 enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut()
             ) {
