@@ -65,6 +65,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.compose.material3.ToggleFloatingActionButtonDefaults.animateIcon
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.role
 import rikka.shizuku.Shizuku
 
 // ───────────── App shell + navigasi ─────────────
@@ -410,8 +413,7 @@ private fun AddSheet(vm: MainVM, onDismiss: () -> Unit, onCamera: () -> Unit, on
             }
             AddRow("Workspace", vm.workspaces.getOrNull(vm.active)?.let { it.name + " · " + it.path }, Icons.Rounded.Folder,
                 onClick = { close { goTab(1) } }) { Icon(Icons.Rounded.ChevronRight, null, tint = cs.onSurfaceVariant) }
-            AddRow("Konfirmasi perintah", "Tanya dulu sebelum shell / tulis file", Icons.Rounded.VerifiedUser,
-                onClick = { vm.confirm = !vm.confirm; vm.save() }) { Switch(vm.confirm, { vm.confirm = it; vm.save() }) }
+            SwitchRow("Konfirmasi perintah", "Tanya dulu sebelum shell / tulis file", vm.confirm, Icons.Rounded.VerifiedUser) { vm.confirm = it; vm.save() }
             AddRow("Ulangi pesan terakhir", null, Icons.Rounded.Refresh, enabled = !vm.busy && vm.msgs.any { it.role == "user" }, onClick = { close { vm.retry() } })
             AddRow("Salin seluruh chat", null, Icons.Rounded.ContentCopy, enabled = vm.msgs.isNotEmpty(), onClick = { close { copyToClipboard(ctx, vm.transcript()) } })
             AddRow("Hapus chat ini", null, Icons.Rounded.DeleteSweep, enabled = !vm.busy && vm.currentId != null, danger = true, onClick = { close { vm.deleteAsk = vm.currentId } })
@@ -555,32 +557,105 @@ fun WorkspaceScreen(vm: MainVM) {
 // ───────────── Setelan ─────────────
 @Composable
 fun Choice(options: List<String>, sel: Int, onSel: (Int) -> Unit) =
-    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+    // Connected button group M3 Expressive: sudut dalam kecil, sudut luar pill,
+    // item terpilih berubah jadi pill penuh (morph) + animasi spring.
+    Row(
+        Modifier.fillMaxWidth().selectableGroup(),
+        horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)
+    ) {
         options.forEachIndexed { i, o ->
-            SegmentedButton(
-                selected = sel == i, onClick = { onSel(i) },
-                shape = SegmentedButtonDefaults.itemShape(i, options.size),
-                icon = {}, // tanpa ikon centang: hemat lebar, cegah teks terpotong
-                label = { Text(o, maxLines = 1, softWrap = false, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
-            )
+            ToggleButton(
+                checked = sel == i,
+                onCheckedChange = { if (it) onSel(i) },
+                modifier = Modifier.weight(1f).defaultMinSize(minHeight = 52.dp)
+                    .semantics { role = androidx.compose.ui.semantics.Role.RadioButton },
+                shapes = when (i) {
+                    0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                    options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                    else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                },
+                contentPadding = PaddingValues(horizontal = 8.dp)
+            ) {
+                AnimatedVisibility(sel == i, enter = fadeIn() + expandHorizontally(), exit = fadeOut() + shrinkHorizontally()) {
+                    Icon(Icons.Rounded.Check, null, Modifier.padding(end = 6.dp).size(18.dp))
+                }
+                Text(o, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 
+/** Kartu setelan: badge ikon bulat + judul/subjudul + slot trailing. Warna ikut state (aktif -> container tonal). */
 @Composable
-fun SwitchRow(title: String, sub: String, checked: Boolean, onChange: (Boolean) -> Unit) =
-    ListItem(headlineContent = { Text(title) }, supportingContent = { Text(sub) }, trailingContent = {
-        Switch(checked, onChange, thumbContent = {
-            Crossfade(checked, label = "thumb") { on ->
-                Icon(if (on) Icons.Rounded.Check else Icons.Rounded.Close, null, Modifier.size(SwitchDefaults.IconSize))
+fun SettingCard(
+    title: String, sub: String?, icon: ImageVector, modifier: Modifier = Modifier,
+    active: Boolean = false, tint: Color? = null, onClick: (() -> Unit)? = null,
+    trailing: @Composable () -> Unit = {}
+) {
+    val cs = MaterialTheme.colorScheme
+    val bg by animateColorAsState(if (active) cs.primaryContainer else cs.surfaceContainerHighest, label = "cardBg")
+    val badge by animateColorAsState(if (active) cs.primary else cs.surfaceContainerHigh, label = "badgeBg")
+    val badgeFg by animateColorAsState(if (active) cs.onPrimary else (tint ?: cs.onSurfaceVariant), label = "badgeFg")
+    val fg = if (active) cs.onPrimaryContainer else cs.onSurface
+    val body: @Composable () -> Unit = {
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Surface(shape = CircleShape, color = badge, contentColor = badgeFg, modifier = Modifier.size(46.dp)) {
+                Box(contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(24.dp)) }
             }
-        })
-    })
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, color = fg)
+                if (sub != null) Text(sub, style = MaterialTheme.typography.bodySmall,
+                    color = if (active) cs.onPrimaryContainer.copy(alpha = 0.8f) else cs.onSurfaceVariant)
+            }
+            trailing()
+        }
+    }
+    if (onClick != null) Surface(onClick, modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = bg, content = body)
+    else Surface(modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = bg, content = body)
+}
+
+@Composable
+fun SwitchRow(title: String, sub: String, checked: Boolean, icon: ImageVector = Icons.Rounded.Tune, onChange: (Boolean) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val bg by animateColorAsState(if (checked) cs.primaryContainer else cs.surfaceContainerHighest, label = "rowBg")
+    val badge by animateColorAsState(if (checked) cs.primary else cs.surfaceContainerHigh, label = "rowBadge")
+    val badgeFg by animateColorAsState(if (checked) cs.onPrimary else cs.onSurfaceVariant, label = "rowBadgeFg")
+    Surface(
+        checked = checked, onCheckedChange = onChange, modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(28.dp), color = bg
+    ) {
+        Row(
+            Modifier.padding(start = 16.dp, end = 20.dp, top = 14.dp, bottom = 14.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Surface(shape = CircleShape, color = badge, contentColor = badgeFg, modifier = Modifier.size(46.dp)) {
+                Box(contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(24.dp)) }
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, color = if (checked) cs.onPrimaryContainer else cs.onSurface)
+                Text(sub, style = MaterialTheme.typography.bodySmall,
+                    color = if (checked) cs.onPrimaryContainer.copy(alpha = 0.8f) else cs.onSurfaceVariant)
+            }
+            Switch(checked, null, thumbContent = {
+                Crossfade(checked, label = "thumb") { on ->
+                    Icon(if (on) Icons.Rounded.Check else Icons.Rounded.Close, null, Modifier.size(SwitchDefaults.IconSize))
+                }
+            })
+        }
+    }
+}
 
 @Composable
 fun Section(title: String, content: @Composable ColumnScope.() -> Unit) =
-    ElevatedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary); content()
+    Card(
+        Modifier.fillMaxWidth(), shape = RoundedCornerShape(32.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, Modifier.padding(start = 4.dp, bottom = 2.dp), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            content()
         }
     }
 
@@ -611,45 +686,43 @@ fun SettingsScreen(vm: MainVM) {
                     Mode.SHIZUKU -> "Menengah: shell uid 2000 (adb). Akses lebih luas dari app biasa, tidak penuh."
                     Mode.ROOT -> "Penuh: seluruh sistem. Berisiko tinggi." + (vm.rootOk?.let { if (it) " (root terdeteksi)" else " (root TIDAK tersedia)" } ?: "")
                 }, style = MaterialTheme.typography.bodySmall)
-                SwitchRow("Konfirmasi perintah", "Minta persetujuan sebelum shell/tulis file", vm.confirm) { vm.confirm = it; vm.save() }
+                SwitchRow("Konfirmasi perintah", "Minta persetujuan sebelum shell/tulis file", vm.confirm, Icons.Rounded.VerifiedUser) { vm.confirm = it; vm.save() }
             }
             Section("Izin") {
-                ListItem(headlineContent = { Text("Akses semua file") }, supportingContent = { Text(if (allFiles) "Diberikan" else "Belum") },
-                    leadingContent = { Icon(if (allFiles) Icons.Rounded.CheckCircle else Icons.Rounded.Folder, null) })
-                Button({
-                    if (Build.VERSION.SDK_INT >= 30) ctx.startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${ctx.packageName}")))
-                    else perm.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE))
-                }) { Text("Beri izin file") }
-                ListItem(headlineContent = { Text("Shizuku") },
-                    supportingContent = { Text(if (!shizukuUp) "Tidak berjalan" else if (shizukuOk) "Berjalan, izin diberikan" else "Berjalan, izin belum diberikan") })
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton({ runCatching { if (shizukuUp) Shizuku.requestPermission(0) }; tick++ }) { Text("Minta izin Shizuku") }
-                    TextButton({ tick++ }) { Text("Segarkan") }
+                SettingCard("Akses semua file", if (allFiles) "Diberikan" else "Belum diberikan",
+                    if (allFiles) Icons.Rounded.CheckCircle else Icons.Rounded.Folder, active = allFiles) {
+                    FilledTonalButton({
+                        if (Build.VERSION.SDK_INT >= 30) ctx.startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${ctx.packageName}")))
+                        else perm.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE))
+                    }, contentPadding = PaddingValues(horizontal = 16.dp)) { Text(if (allFiles) "Ubah" else "Izinkan") }
+                }
+                SettingCard("Shizuku", if (!shizukuUp) "Tidak berjalan" else if (shizukuOk) "Berjalan, izin diberikan" else "Berjalan, izin belum diberikan",
+                    Icons.Rounded.Adb, active = shizukuUp && shizukuOk) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton({ tick++ }) { Icon(Icons.Rounded.Refresh, "Segarkan") }
+                        if (shizukuUp && !shizukuOk) FilledTonalButton({ runCatching { Shizuku.requestPermission(0) }; tick++ }, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Izinkan") }
+                    }
                 }
                 val cs = MaterialTheme.colorScheme
                 val su = remember(vm.rootOk) { vm.suBinaryVisible() }
-                ListItem(
-                    headlineContent = { Text("Akses root aplikasi") },
-                    supportingContent = { Text(when {
+                SettingCard("Akses root aplikasi",
+                    when {
                         vm.rootChecking -> "Memeriksa… setujui permintaan root jika muncul."
                         vm.rootOk == true -> "Sudah diberikan. MiraiCode bisa menjalankan perintah sebagai root."
                         vm.rootOk == false -> "Belum diberikan / tidak tersedia. " + if (su) "su terdeteksi: izinkan MiraiCode di Magisk/KernelSU, lalu periksa ulang." else "su tidak terdeteksi, perangkat mungkin tidak ter-root."
                         else -> "Belum diperiksa. " + if (su) "su terdeteksi di perangkat." else "su tidak terlihat oleh aplikasi (belum tentu tidak ter-root)."
-                    }) },
-                    leadingContent = {
-                        if (vm.rootChecking) LoadingIndicator(Modifier.size(32.dp))
-                        else when (vm.rootOk) {
-                            true -> Icon(Icons.Rounded.CheckCircle, "Diberikan", tint = cs.primary)
-                            false -> Icon(Icons.Rounded.Cancel, "Belum", tint = cs.error)
-                            null -> Icon(Icons.Rounded.Info, "Belum diperiksa", tint = cs.onSurfaceVariant)
-                        }
-                    }
-                )
-                FilledTonalButton({ vm.checkRoot() }, enabled = !vm.rootChecking) { Text(if (vm.rootOk == null) "Periksa akses root" else "Periksa ulang") }
+                    },
+                    when (vm.rootOk) { true -> Icons.Rounded.CheckCircle; false -> Icons.Rounded.Cancel; null -> Icons.Rounded.Security },
+                    active = vm.rootOk == true, tint = if (vm.rootOk == false) cs.error else null) {
+                    if (vm.rootChecking) LoadingIndicator(Modifier.size(32.dp))
+                }
+                FilledTonalButton({ vm.checkRoot() }, Modifier.fillMaxWidth().defaultMinSize(minHeight = 52.dp), enabled = !vm.rootChecking) {
+                    Text(if (vm.rootOk == null) "Periksa akses root" else "Periksa ulang")
+                }
             }
             Section("Tampilan") {
                 Choice(listOf("Sistem", "Terang", "Gelap", "AMOLED"), vm.theme) { vm.theme = it; vm.save() }
-                SwitchRow("Dynamic color", if (Build.VERSION.SDK_INT >= 31) "Ikuti wallpaper (Android 12+)" else "Perlu Android 12+", vm.dynamic) { vm.dynamic = it; vm.save() }
+                SwitchRow("Dynamic color", if (Build.VERSION.SDK_INT >= 31) "Ikuti wallpaper (Android 12+)" else "Perlu Android 12+", vm.dynamic, Icons.Rounded.Palette) { vm.dynamic = it; vm.save() }
             }
         }
     }
