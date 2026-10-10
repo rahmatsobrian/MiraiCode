@@ -20,7 +20,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.graphics.SolidColor
+import kotlinx.coroutines.launch
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -54,23 +57,39 @@ fun MiraiApp(vm: MainVM) {
         "Setelan" to Icons.Rounded.Settings)
     val fade = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
     val slide = MaterialTheme.motionScheme.defaultSpatialSpec<IntOffset>()
-    // Keyboard terbuka -> sembunyikan nav bar, supaya tidak ada ruang kosong di atas keyboard
-    val imeOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
-    // contentWindowInsets=0: TopAppBar & NavigationBar sudah mengurus inset-nya sendiri
-    // (sebelumnya inset terhitung dobel -> jarak kosong besar di atas & di bawah)
-    Scaffold(contentWindowInsets = WindowInsets(0, 0, 0, 0), bottomBar = {
-        if (!imeOpen) ShortNavigationBar {
-            tabs.forEachIndexed { i, (l, ic) ->
-                ShortNavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Icon(ic, null) }, label = { Text(l) })
+    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    // Navigasi pindah dari bottom bar ke sidebar (drawer) -> area chat lebih luas
+    ModalNavigationDrawer(drawerState = drawer, drawerContent = {
+        ModalDrawerSheet(Modifier.width(280.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("MiraiCode", Modifier.padding(28.dp, 24.dp, 16.dp, 2.dp), style = MaterialTheme.typography.headlineSmall)
+                Text(vm.workspaces.getOrNull(vm.active)?.name ?: "", Modifier.padding(28.dp, 0.dp, 16.dp, 16.dp),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                NavigationDrawerItem(
+                    label = { Text("Chat baru") }, icon = { Icon(Icons.Rounded.Add, null) }, selected = false,
+                    onClick = { if (!vm.busy) { vm.clearChat(); tab = 0 }; scope.launch { drawer.close() } },
+                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+                )
+                HorizontalDivider(Modifier.padding(horizontal = 28.dp, vertical = 8.dp))
+                tabs.forEachIndexed { i, (l, ic) ->
+                    NavigationDrawerItem(
+                        label = { Text(l) }, icon = { Icon(ic, null) }, selected = tab == i,
+                        onClick = { tab = i; scope.launch { drawer.close() } },
+                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+                    )
+                }
             }
         }
-    }) { pad ->
-        AnimatedContent(tab, modifier = Modifier.padding(pad), label = "nav", transitionSpec = {
-            val d = if (targetState > initialState) 1 else -1
-            (fadeIn(fade) + slideInHorizontally(slide) { it / 6 * d }) togetherWith
-                (fadeOut(fade) + slideOutHorizontally(slide) { -it / 6 * d })
-        }) { t ->
-            when (t) { 0 -> ChatScreen(vm); 1 -> WorkspaceScreen(vm); else -> SettingsScreen(vm) }
+    }) {
+        CompositionLocalProvider(LocalOpenDrawer provides { scope.launch { drawer.open() } }) {
+            AnimatedContent(tab, modifier = Modifier.fillMaxSize(), label = "nav", transitionSpec = {
+                val d = if (targetState > initialState) 1 else -1
+                (fadeIn(fade) + slideInHorizontally(slide) { it / 6 * d }) togetherWith
+                    (fadeOut(fade) + slideOutHorizontally(slide) { -it / 6 * d })
+            }) { t ->
+                when (t) { 0 -> ChatScreen(vm); 1 -> WorkspaceScreen(vm); else -> SettingsScreen(vm) }
+            }
         }
     }
     vm.crash?.let { c ->
@@ -101,13 +120,24 @@ fun MiraiApp(vm: MainVM) {
         dismissButton = { TextButton({ vm.rootWarn = false }) { Text("Batal") } })
 }
 
+val LocalOpenDrawer = staticCompositionLocalOf<() -> Unit> { {} }
+
+/** Header ringkas 48dp (sebelumnya TopAppBar ~64dp + inset ganda) dengan tombol sidebar. */
 @Composable
-fun Page(title: String, actions: @Composable RowScope.() -> Unit = {}, content: @Composable ColumnScope.() -> Unit) =
-    Column(Modifier.fillMaxSize()) { TopAppBar(title = { Text(title) }, actions = actions); content() }
+fun Page(title: String, actions: @Composable RowScope.() -> Unit = {}, bottomInset: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
+    val open = LocalOpenDrawer.current
+    Column(Modifier.fillMaxSize().statusBarsPadding().then(if (bottomInset) Modifier.navigationBarsPadding() else Modifier)) {
+        Row(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(open) { Icon(Icons.Rounded.Menu, "Menu") }
+            Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            actions()
+            Spacer(Modifier.width(8.dp))
+        }
+        content()
+    }
+}
 
 // ───────────── Chat ─────────────
-private val InputH = 56.dp   // tinggi minimum OutlinedTextField; tombol kirim & dropdown disamakan
-
 @Composable
 fun ChatScreen(vm: MainVM) {
     val ls = rememberLazyListState()
@@ -119,7 +149,7 @@ fun ChatScreen(vm: MainVM) {
     }
     Page("MiraiCode", actions = {
         AssistChip(onClick = {}, label = { Text(vm.mode.name) }, leadingIcon = { Icon(Icons.Rounded.Security, null, Modifier.size(18.dp)) })
-    }) {
+    }, bottomInset = false) {
         Box(Modifier.weight(1f)) {
             if (vm.msgs.isEmpty()) Column(Modifier.align(Alignment.Center).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Workspace: ${vm.workspaces[vm.active].path}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
@@ -128,7 +158,7 @@ fun ChatScreen(vm: MainVM) {
                     SuggestionChip(onClick = { vm.send(it) }, label = { Text(it) })
                 }
             }
-            LazyColumn(Modifier.fillMaxSize(), state = ls, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyColumn(Modifier.fillMaxSize(), state = ls, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 itemsIndexed(vm.msgs) { i, m ->
                     Bubble(m, i, isLast = i == vm.msgs.lastIndex, busy = vm.busy,
                         onEdit = { idx -> vm.rollback(idx)?.let { input = it } }, onRetry = { vm.retry() })
@@ -141,34 +171,49 @@ fun ChatScreen(vm: MainVM) {
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(12.dp).imePadding(), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(input, { input = it }, Modifier.weight(1f).heightIn(min = InputH), placeholder = { Text("Pesan…") }, maxLines = 5, shape = RoundedCornerShape(28.dp))
-            // Tombol kirim + dropdown: tinggi sama persis dengan kolom input (56dp), menyatu seperti split button
-            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                Button(
-                    onClick = { if (vm.busy) vm.stop() else if (input.isNotBlank()) { vm.send(input.trim()); input = "" } },
-                    modifier = Modifier.size(width = 60.dp, height = InputH),
-                    enabled = vm.busy || input.isNotBlank(),
-                    shape = RoundedCornerShape(topStart = 28.dp, bottomStart = 28.dp, topEnd = 6.dp, bottomEnd = 6.dp),
-                    contentPadding = PaddingValues(0.dp)
-                ) {
-                    if (vm.busy) Icon(Icons.Rounded.Stop, "Berhenti") else Icon(Icons.AutoMirrored.Rounded.Send, "Kirim")
-                }
-                Box {
-                    Button(
-                        onClick = { menu = !menu },
-                        modifier = Modifier.size(width = 48.dp, height = InputH),
-                        shape = RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp, topEnd = 28.dp, bottomEnd = 28.dp),
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        val r by animateFloatAsState(if (menu) 180f else 0f, label = "arrow")
-                        Icon(Icons.Rounded.KeyboardArrowDown, "Menu", Modifier.graphicsLayer { rotationZ = r })
+        // Kolom input + tombol dalam satu kartu (gaya Gemini).
+        // Satu baris: [ + ] teks [ kirim ]. Teks panjang: teks di atas, tombol turun ke baris bawah.
+        // Satu BasicTextField yang sama dipakai di kedua mode, jadi fokus/keyboard tidak hilang saat berpindah.
+        val cs = MaterialTheme.colorScheme
+        var expanded by remember { mutableStateOf(false) }
+        LaunchedEffect(input) { if (input.isEmpty()) expanded = false }
+        val sidePad by animateDpAsState(if (expanded) 16.dp else 52.dp, label = "sidePad")
+        val botPad by animateDpAsState(if (expanded) 52.dp else 14.dp, label = "botPad")
+        Surface(
+            color = cs.surfaceContainerHigh, shape = RoundedCornerShape(28.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)
+                .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
+        ) {
+            Box(Modifier.fillMaxWidth().heightIn(min = 52.dp).animateContentSize()) {
+                BasicTextField(
+                    value = input, onValueChange = { input = it },
+                    modifier = Modifier.fillMaxWidth().padding(start = sidePad, end = sidePad, top = 14.dp, bottom = botPad),
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = cs.onSurface),
+                    cursorBrush = SolidColor(cs.primary), maxLines = 8,
+                    onTextLayout = { if (it.lineCount > 1) expanded = true },
+                    decorationBox = { inner ->
+                        Box { if (input.isEmpty()) Text("Pesan…", color = cs.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge); inner() }
+                    }
+                )
+                // Menu (kiri bawah)
+                Box(Modifier.align(Alignment.BottomStart).padding(6.dp)) {
+                    IconButton({ menu = !menu }, Modifier.size(40.dp)) {
+                        val r by animateFloatAsState(if (menu) 45f else 0f, label = "plus")
+                        Icon(Icons.Rounded.Add, "Menu", Modifier.graphicsLayer { rotationZ = r })
                     }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(text = { Text("Ulangi pesan terakhir") }, leadingIcon = { Icon(Icons.Rounded.Refresh, null) }, enabled = !vm.busy, onClick = { menu = false; vm.retry() })
                         DropdownMenuItem(text = { Text("Salin seluruh chat") }, leadingIcon = { Icon(Icons.Rounded.ContentCopy, null) }, enabled = vm.msgs.isNotEmpty(), onClick = { menu = false; copyToClipboard(ctx, vm.transcript()) })
                         DropdownMenuItem(text = { Text("Bersihkan chat") }, leadingIcon = { Icon(Icons.Rounded.DeleteSweep, null) }, enabled = !vm.busy, onClick = { menu = false; vm.clearChat() })
                     }
+                }
+                // Kirim / Berhenti (kanan bawah)
+                FilledIconButton(
+                    onClick = { if (vm.busy) vm.stop() else if (input.isNotBlank()) { vm.send(input.trim()); input = "" } },
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp).size(40.dp),
+                    enabled = vm.busy || input.isNotBlank()
+                ) {
+                    if (vm.busy) Icon(Icons.Rounded.Stop, "Berhenti") else Icon(Icons.Rounded.ArrowUpward, "Kirim")
                 }
             }
         }
